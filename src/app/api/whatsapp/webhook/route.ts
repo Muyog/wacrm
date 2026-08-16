@@ -315,7 +315,9 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // Default ON: the column is NOT NULL DEFAULT TRUE, but a row
           // read before migration 039 lands would have it undefined,
           // and losing attachments is the failure mode worth avoiding.
-          config.mirror_inbound_media !== false
+          config.mirror_inbound_media !== false,
+          // Agent bound to this WhatsApp number (nullable → account AI).
+          config.agent_id ?? null,
         )
       }
     }
@@ -586,7 +588,9 @@ async function processMessage(
   accessToken: string,
   // Per-account opt-out for the inbound-media mirror (migration 039).
   // See parseMessageContent for what it turns off.
-  mirrorMedia: boolean
+  mirrorMedia: boolean,
+  // Agent bound to this WhatsApp number (nullable → account AI).
+  agentId?: string | null,
 ) {
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
@@ -866,18 +870,31 @@ async function processMessage(
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
 
-  // AI auto-reply. Runs only for plain-text inbound the deterministic
-  // flow runner did NOT consume (flows win over the LLM), and only when
-  // the account has enabled it. Awaited inside `after()` (same reason as
-  // the webhook dispatch below); `dispatchInboundToAiReply` owns its
-  // eligibility gates + try/catch and never throws.
+  // AI auto-reply. If the number has a bound agent, use it (agent-level
+  // prompt + key). Otherwise fall back to the classic account-level AI.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    await dispatchInboundToAiReply({
-      accountId,
-      conversationId: conversation.id,
-      contactId: contactRecord.id,
-      configOwnerUserId,
-    })
+    try {
+      const boundAgentId = agentId ?? null
+      if (boundAgentId) {
+        const { loadAgent, generateAgentReply } = await import('@/lib/ai/agent')
+        const agent = await loadAgent(supabaseAdmin(), boundAgentId)
+        if (agent && agent.is_active && agent.auto_reply_enabled) {
+          await generateAgentReply(supabaseAdmin(), agent, conversation.id, {
+            accountId,
+            mode: 'auto_reply',
+          })
+        }
+      } else {
+        await dispatchInboundToAiReply({
+          accountId,
+          conversationId: conversation.id,
+          contactId: contactRecord.id,
+          configOwnerUserId,
+        })
+      }
+    } catch (err) {
+      console.error('[webhook AI] reply dispatch error:', err)
+    }
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget
