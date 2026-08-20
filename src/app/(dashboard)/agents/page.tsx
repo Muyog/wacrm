@@ -314,19 +314,28 @@ export default function AgentsBuilderPage() {
                     </>
                   )}
                   {agent.website_enabled && agent.widget_token && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => copyEmbed(agent.widget_token)}
-                      className="ml-auto"
-                    >
-                      {copied === agent.widget_token ? (
-                        <Check className="mr-1 h-3 w-3" />
-                      ) : (
-                        <Copy className="mr-1 h-3 w-3" />
-                      )}
-                      Embed
-                    </Button>
+                    <div className="ml-auto flex items-center gap-1">
+                      <a
+                        href={`/widget/preview?token=${agent.widget_token}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-7 items-center rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        Preview ↗
+                      </a>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => copyEmbed(agent.widget_token)}
+                      >
+                        {copied === agent.widget_token ? (
+                          <Check className="mr-1 h-3 w-3" />
+                        ) : (
+                          <Copy className="mr-1 h-3 w-3" />
+                        )}
+                        Embed
+                      </Button>
+                    </div>
                   )}
                 </div>
               </CardContent>
@@ -544,14 +553,28 @@ export default function AgentsBuilderPage() {
                 </div>
 
                 {draft.website_enabled && draft.widget_token && (
-                  <div className="space-y-2 rounded-lg border bg-muted/40 p-3">
+                  <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
                     <Label>Embed on your website</Label>
                     <code className="block overflow-x-auto rounded bg-muted px-3 py-2 text-xs">
                       {embedUrl(draft.widget_token)}
                     </code>
-                    <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
-                      <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
+                        <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
+                      </Button>
+                      <a
+                        href={`/widget/preview?token=${draft.widget_token}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                      >
+                        Open preview ↗
+                      </a>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Paste the snippet into your site&apos;s <code>&lt;body&gt;</code>.
+                      The preview opens the exact same widget on a test page.
+                    </p>
                   </div>
                 )}
               </section>
