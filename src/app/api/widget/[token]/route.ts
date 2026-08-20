@@ -17,10 +17,12 @@ function admin() {
 }
 
 /** Public GET — widget boot config (no auth). */
-export async function GET(req: Request) {
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ token: string }> },
+) {
   try {
-    const url = new URL(req.url)
-    const token = url.searchParams.get('widget') || url.pathname.split('/')[2]
+    const { token } = await params
     if (!token) return NextResponse.json({ error: 'missing token' }, { status: 400 })
 
     const agent = await loadAgentByWidgetToken(admin(), token)
