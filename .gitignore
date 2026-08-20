@@ -42,3 +42,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# --- hermes/local build & deploy artifacts (never commit) ---
+*.log
+vercel_deploy*.log
+deploy.log
+migrate.log
+build_check*.log
+supabase/.temp/
+
+scripts/.hermes-tmp.*

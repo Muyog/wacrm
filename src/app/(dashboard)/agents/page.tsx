@@ -343,181 +343,218 @@ export default function AgentsBuilderPage() {
           </DialogHeader>
 
           {draft && (
-            <div className="space-y-5">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="ag-name">Name *</Label>
-                  <Input
-                    id="ag-name"
-                    value={draft.name}
-                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                    placeholder="e.g. Support Bot"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="ag-model">Model</Label>
-                  <Select
-                    value={`${draft.model_provider}:${draft.model}`}
-                    onValueChange={(v) => {
-                                          const val = v ?? `${draft.model_provider}:${draft.model}`
-                                          const [provider, ...rest] = val.split(':')
-                                          setDraft({ ...draft, model_provider: provider as 'openai' | 'anthropic', model: rest.join(':') })
-                                        }}
-                  >
-                    <SelectTrigger id="ag-model"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
-                      <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
-                      <SelectItem value="openai:gpt-4.1-mini">OpenAI · GPT-4.1 mini</SelectItem>
-                      <SelectItem value="anthropic:claude-sonnet-4-6">Anthropic · Claude Sonnet 4.6</SelectItem>
-                      <SelectItem value="anthropic:claude-3-5-haiku-latest">Anthropic · Claude Haiku</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="ag-temp">Temperature</Label>
-                  <Input
-                    id="ag-temp"
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.1}
-                    value={draft.temperature}
-                    onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="ag-max">Max tokens</Label>
-                  <Input
-                    id="ag-max"
-                    type="number"
-                    min={128}
-                    step={128}
-                    value={draft.max_tokens}
-                    onChange={(e) => setDraft({ ...draft, max_tokens: Number(e.target.value) })}
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="ag-desc">Description</Label>
-                <Input
-                  id="ag-desc"
-                  value={draft.description ?? ''}
-                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                  placeholder="What is this agent for? (internal note)"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="ag-prompt">System prompt *</Label>
-                <Textarea
-                  id="ag-prompt"
-                  className="min-h-[140px] font-mono text-xs"
-                  value={draft.system_prompt}
-                  onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
-                  placeholder="You are the support assistant for…"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Tools</Label>
-                <div className="space-y-2">
-                  {TOOL_OPTIONS.map((tool) => (
-                    <label
-                      key={tool.id}
-                      className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/50"
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-1"
-                        checked={draft.tools.includes(tool.id)}
-                        onChange={() => toggleTool(tool.id)}
-                      />
-                      <div>
-                        <p className="text-sm font-medium">{tool.label}</p>
-                        <p className="text-xs text-muted-foreground">{tool.desc}</p>
-                      </div>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-lg border p-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium">Website widget</p>
-                    <p className="text-xs text-muted-foreground">
-                      Embed a chat bubble on your website — conversations appear in the inbox.
-                    </p>
+            <div className="space-y-6">
+              {/* BASICS */}
+              <section className="space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Basics
+                </h3>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="ag-name">Name *</Label>
+                    <Input
+                      id="ag-name"
+                      value={draft.name}
+                      onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                      placeholder="e.g. Support Bot"
+                    />
                   </div>
-                  <Switch
-                    checked={draft.website_enabled}
-                    onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
-                  />
+                  <div className="space-y-2">
+                    <Label htmlFor="ag-desc">Description</Label>
+                    <Input
+                      id="ag-desc"
+                      value={draft.description ?? ''}
+                      onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                      placeholder="What is this agent for? (internal note)"
+                    />
+                  </div>
                 </div>
-                {draft.website_enabled && (
-                  <div className="grid grid-cols-2 gap-4 pt-1">
+              </section>
+
+              {/* MODEL */}
+              <section className="space-y-4 border-t border-border pt-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Model
+                </h3>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label htmlFor="ag-model">Provider &amp; model</Label>
+                    <Select
+                      value={`${draft.model_provider}:${draft.model}`}
+                      onValueChange={(v) => {
+                        const val = v ?? `${draft.model_provider}:${draft.model}`;
+                        const [provider, ...rest] = val.split(':');
+                        setDraft({
+                          ...draft,
+                          model_provider: provider as 'openai' | 'anthropic',
+                          model: rest.join(':'),
+                        });
+                      }}
+                    >
+                      <SelectTrigger id="ag-model">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
+                        <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
+                        <SelectItem value="openai:gpt-4.1-mini">OpenAI · GPT-4.1 mini</SelectItem>
+                        <SelectItem value="anthropic:claude-sonnet-4-6">
+                          Anthropic · Claude Sonnet 4.6
+                        </SelectItem>
+                        <SelectItem value="anthropic:claude-3-5-haiku-latest">
+                          Anthropic · Claude Haiku
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
-                      <Label htmlFor="ag-wtitle">Widget title</Label>
+                      <Label htmlFor="ag-temp">Temperature</Label>
                       <Input
-                        id="ag-wtitle"
-                        value={draft.widget_title}
-                        onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
+                        id="ag-temp"
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.1}
+                        value={draft.temperature}
+                        onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="ag-wcolor">Accent color</Label>
-                      <div className="flex items-center gap-2">
+                      <Label htmlFor="ag-max">Max tokens</Label>
+                      <Input
+                        id="ag-max"
+                        type="number"
+                        min={128}
+                        step={128}
+                        value={draft.max_tokens}
+                        onChange={(e) => setDraft({ ...draft, max_tokens: Number(e.target.value) })}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* BEHAVIOR */}
+              <section className="space-y-4 border-t border-border pt-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Behavior
+                </h3>
+                <div className="space-y-2">
+                  <Label htmlFor="ag-prompt">System prompt *</Label>
+                  <Textarea
+                    id="ag-prompt"
+                    className="min-h-[140px] font-mono text-xs"
+                    value={draft.system_prompt}
+                    onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
+                    placeholder="You are the support assistant for…"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Tools</Label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {TOOL_OPTIONS.map((tool) => (
+                      <label
+                        key={tool.id}
+                        className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors hover:bg-muted/50"
+                      >
                         <input
-                          type="color"
-                          className="h-9 w-12 cursor-pointer rounded-md border"
-                          value={draft.widget_primary_color}
-                          onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                          type="checkbox"
+                          className="mt-1"
+                          checked={draft.tools.includes(tool.id)}
+                          onChange={() => toggleTool(tool.id)}
                         />
+                        <div>
+                          <p className="text-sm font-medium">{tool.label}</p>
+                          <p className="text-xs text-muted-foreground">{tool.desc}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {/* CHANNELS */}
+              <section className="space-y-4 border-t border-border pt-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Channels
+                </h3>
+                <div className="space-y-3 rounded-lg border p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">Website widget</p>
+                      <p className="text-xs text-muted-foreground">
+                        Embed a chat bubble on your website — conversations appear in the inbox.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={draft.website_enabled}
+                      onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
+                    />
+                  </div>
+                  {draft.website_enabled && (
+                    <div className="grid gap-4 pt-1 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="ag-wtitle">Widget title</Label>
                         <Input
-                          id="ag-wcolor"
-                          value={draft.widget_primary_color}
-                          onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                          id="ag-wtitle"
+                          value={draft.widget_title}
+                          onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="ag-wcolor">Accent color</Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            className="h-9 w-12 cursor-pointer rounded-md border"
+                            value={draft.widget_primary_color}
+                            onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                          />
+                          <Input
+                            id="ag-wcolor"
+                            value={draft.widget_primary_color}
+                            onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2 sm:col-span-2">
+                        <Label htmlFor="ag-welcome">Welcome message</Label>
+                        <Input
+                          id="ag-welcome"
+                          value={draft.widget_welcome_message}
+                          onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
                         />
                       </div>
                     </div>
-                    <div className="space-y-2 col-span-2">
-                      <Label htmlFor="ag-welcome">Welcome message</Label>
-                      <Input
-                        id="ag-welcome"
-                        value={draft.widget_welcome_message}
-                        onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
-                      />
-                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="ag-akey">
+                    Agent API key (optional — falls back to account AI key)
+                  </Label>
+                  <Input
+                    id="ag-akey"
+                    type="password"
+                    placeholder={keyPlaceholder ? '•••••••• (key saved — leave blank to keep)' : 'sk-… / anthropic key'}
+                    value={apiKeyInput}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                  />
+                </div>
+
+                {draft.website_enabled && draft.widget_token && (
+                  <div className="space-y-2 rounded-lg border bg-muted/40 p-3">
+                    <Label>Embed on your website</Label>
+                    <code className="block overflow-x-auto rounded bg-muted px-3 py-2 text-xs">
+                      {embedUrl(draft.widget_token)}
+                    </code>
+                    <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
+                      <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
+                    </Button>
                   </div>
                 )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="ag-akey">
-                  Agent API key (optional — falls back to account AI key)
-                </Label>
-                <Input
-                  id="ag-akey"
-                  type="password"
-                  placeholder={keyPlaceholder ? '•••••••• (key saved — leave blank to keep)' : 'sk-… / anthropic key'}
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                />
-              </div>
-
-              {draft.website_enabled && draft.widget_token && (
-                <div className="space-y-2 rounded-lg border bg-muted/40 p-3">
-                  <Label>Embed on your website</Label>
-                  <code className="block overflow-x-auto rounded bg-muted px-3 py-2 text-xs">
-                    {embedUrl(draft.widget_token)}
-                  </code>
-                  <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
-                    <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
-                  </Button>
-                </div>
-              )}
+              </section>
 
               {error && <p className="text-sm text-red-500">{error}</p>}
             </div>
