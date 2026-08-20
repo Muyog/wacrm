@@ -18,6 +18,7 @@ import { FieldsAndTagsPanel } from '@/components/settings/fields-and-tags-panel'
 import { DealsSettings } from '@/components/settings/deals-settings';
 import { MembersTab } from '@/components/settings/members-tab';
 import { ApiKeysSettings } from '@/components/settings/api-keys-settings';
+import { BamisoroChatSettings } from '@/components/settings/bamisoro-chat-settings';
 import {
   resolveSection,
   type SettingsSection,
@@ -42,7 +43,7 @@ export default function SettingsPage() {
 function SettingsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { defaultCurrency } = useAuth();
+  const { defaultCurrency, isAdmin } = useAuth();
   const { mode } = useTheme();
   const t = useTranslations('Settings');
 
@@ -81,6 +82,7 @@ function SettingsPageInner() {
     deals: <DealsSettings />,
     members: <MembersTab />,
     api: <ApiKeysSettings />,
+    'bamisoro-chat': <BamisoroChatSettings />,
   };
 
   return (
