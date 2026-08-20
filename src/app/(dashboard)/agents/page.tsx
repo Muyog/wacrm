@@ -35,7 +35,7 @@ interface Agent {
   model: string;
   temperature: number;
   max_tokens: number;
-  tools: string[];
+  tools: (string | Record<string, unknown>)[];
   auto_reply_enabled: boolean;
   website_enabled: boolean;
   widget_token: string | null;
@@ -46,18 +46,36 @@ interface Agent {
   is_active: boolean;
 }
 
-const TOOL_OPTIONS = [
+interface CustomToolParameter {
+  name: string;
+  type: 'string' | 'number' | 'boolean';
+  description: string;
+  required: boolean;
+}
+
+interface CustomToolDefinition {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  parameters: CustomToolParameter[];
+}
+
+const PRESET_TOOL_OPTIONS: { id: string; label: string; desc: string }[] = [
   { id: 'knowledge_base', label: 'Knowledge base', desc: 'Answer from your uploaded docs (FAQs, policies, products).' },
   { id: 'handoff', label: 'Human handoff', desc: 'Hand over to a human agent when the visitor asks or when unsure.' },
   { id: 'calendar', label: 'Booking / scheduling', desc: 'Reserve for a future scheduling integration.' },
 ];
+
+const PRESET_TOOL_IDS = PRESET_TOOL_OPTIONS.map((tool) => tool.id);
 
 function emptyAgent(): Omit<Agent, 'id'> {
   return {
     name: '',
     description: '',
     avatar_url: null,
-    system_prompt: 'You are a helpful assistant for this business. Be concise, friendly, and accurate. If you cannot help, say so and offer to connect the customer with a human.',
+    system_prompt:
+      'You are a helpful assistant for this business. Be concise, friendly, and accurate. If you cannot help, say so and offer to connect the customer with a human.',
     model_provider: 'openai',
     model: 'gpt-4o-mini',
     temperature: 0.7,
@@ -74,6 +92,46 @@ function emptyAgent(): Omit<Agent, 'id'> {
   };
 }
 
+function presetToolIds(tools: (string | Record<string, unknown>)[]): string[] {
+  return tools.filter((t): t is string => typeof t === 'string');
+}
+
+function customToolDefs(tools: (string | Record<string, unknown>)[]): CustomToolDefinition[] {
+  return tools
+    .filter((t): t is Record<string, unknown> => typeof t === 'object' && !!t)
+    .map((t) => ({
+      id: String(t.id ?? t.name ?? crypto.randomUUID()),
+      name: String(t.name ?? ''),
+      description: String(t.description ?? ''),
+      enabled: true,
+      parameters: Array.isArray(t.parameters)
+        ? (t.parameters as Record<string, unknown>[]).map((p) => ({
+            name: String(p.name ?? ''),
+            type: (p.type === 'number' || p.type === 'boolean' ? p.type : 'string') as CustomToolParameter['type'],
+            description: String(p.description ?? ''),
+            required: !!p.required,
+          }))
+        : [],
+    }));
+}
+
+function uid(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'xxxx-xxxx-xxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16));
+}
+
+function encodeCustomTool(tool: CustomToolDefinition): Record<string, unknown> {
+  return {
+    id: tool.id,
+    name: tool.name,
+    description: tool.description,
+    type: 'custom',
+    parameters: tool.parameters,
+  };
+}
+
 export default function AgentsBuilderPage() {
   const { accountRole } = useAuth();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -84,6 +142,8 @@ export default function AgentsBuilderPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [keyPlaceholder, setKeyPlaceholder] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
+  const [customTools, setCustomTools] = useState<CustomToolDefinition[]>([]);
+  const [editingCustomTool, setEditingCustomTool] = useState<CustomToolDefinition | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadAgents = useCallback(async () => {
@@ -115,6 +175,7 @@ export default function AgentsBuilderPage() {
   const openNew = () => {
     setEditingId(null);
     setDraft({ ...emptyAgent() });
+    setCustomTools([]);
     setKeyPlaceholder(null);
     setApiKeyInput('');
     setError(null);
@@ -122,6 +183,8 @@ export default function AgentsBuilderPage() {
 
   const openEdit = (agent: Agent) => {
     setEditingId(agent.id);
+    const presets = presetToolIds(agent.tools);
+    const custom = customToolDefs(agent.tools);
     setDraft({
       name: agent.name,
       description: agent.description ?? '',
@@ -141,6 +204,7 @@ export default function AgentsBuilderPage() {
       widget_position: agent.widget_position,
       is_active: agent.is_active,
     });
+    setCustomTools(custom);
     setKeyPlaceholder('has-key');
     setApiKeyInput('');
     setError(null);
@@ -149,7 +213,13 @@ export default function AgentsBuilderPage() {
   const close = () => {
     setDraft(null);
     setEditingId(null);
+    setEditingCustomTool(null);
   };
+
+  const buildToolPayload = useCallback((): (string | Record<string, unknown>)[] => {
+    if (!draft) return [];
+    return [...presetToolIds(draft.tools), ...customTools.map(encodeCustomTool)];
+  }, [draft, customTools]);
 
   const save = async () => {
     if (!draft) return;
@@ -162,11 +232,10 @@ export default function AgentsBuilderPage() {
     try {
       const payload: Record<string, unknown> = {
         ...draft,
+        tools: buildToolPayload(),
         generate_widget: draft.website_enabled && !draft.widget_token,
       };
-      // Send a new API key only when the user typed one.
       if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
-      // Fetch has_key flag for existing agents so the placeholder shows.
       const res = await fetch(editingId ? `/api/agents/${editingId}` : '/api/agents', {
         method: editingId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,14 +265,57 @@ export default function AgentsBuilderPage() {
     } catch {}
   };
 
-  const toggleTool = (toolId: string) => {
+  const togglePresetTool = (toolId: string) => {
     if (!draft) return;
+    const current = presetToolIds(draft.tools);
+    const next = current.includes(toolId)
+      ? current.filter((t) => t !== toolId)
+      : [...current, toolId];
     setDraft({
       ...draft,
-      tools: draft.tools.includes(toolId)
-        ? draft.tools.filter((t) => t !== toolId)
-        : [...draft.tools, toolId],
+      tools: [...next, ...customToolDefs(draft.tools)],
+    } as Omit<Agent, 'id'>);
+  };
+
+  const addCustomTool = () => {
+    setEditingCustomTool({
+      id: uid(),
+      name: '',
+      description: '',
+      enabled: true,
+      parameters: [],
     });
+  };
+
+  const saveCustomTool = () => {
+    if (!editingCustomTool || !editingCustomTool.name.trim()) return;
+    setCustomTools((prev) => {
+      const exists = prev.some((t) => t.id === editingCustomTool.id);
+      const next = exists
+        ? prev.map((t) => (t.id === editingCustomTool.id ? editingCustomTool : t))
+        : [...prev, editingCustomTool];
+      if (draft) {
+        setDraft({
+          ...draft,
+          tools: [...presetToolIds(draft.tools), ...next.map(encodeCustomTool)] as Agent['tools'],
+        });
+      }
+      return next;
+    });
+    setEditingCustomTool(null);
+  };
+
+  const removeCustomTool = (id: string) => {
+    setCustomTools((prev) => prev.filter((t) => t.id !== id));
+    if (draft) {
+      setDraft({
+        ...draft,
+        tools: [
+          ...presetToolIds(draft.tools),
+          ...customToolDefs(draft.tools).filter((t) => t.id !== id).map(encodeCustomTool),
+        ] as Agent['tools'],
+      });
+    }
   };
 
   const copyEmbed = async (token: string | null) => {
@@ -346,250 +458,451 @@ export default function AgentsBuilderPage() {
 
       {/* Editor */}
       <Dialog open={!!draft} onOpenChange={(o) => !o && close()}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{editingId ? 'Edit agent' : 'New agent'}</DialogTitle>
-          </DialogHeader>
+        <DialogContent className="max-h-[92vh] overflow-hidden p-0">
+          <div className="max-h-[92vh] overflow-y-auto px-6 py-6">
+            <DialogHeader className="mb-6">
+              <DialogTitle>{editingId ? 'Edit agent' : 'New agent'}</DialogTitle>
+              <p className="text-sm text-muted-foreground">
+                Build one AI agent and use it across WhatsApp and your website widget.
+              </p>
+            </DialogHeader>
 
-          {draft && (
-            <div className="space-y-6">
-              {/* BASICS */}
-              <section className="space-y-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Basics
-                </h3>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="ag-name">Name *</Label>
-                    <Input
-                      id="ag-name"
-                      value={draft.name}
-                      onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                      placeholder="e.g. Support Bot"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="ag-desc">Description</Label>
-                    <Input
-                      id="ag-desc"
-                      value={draft.description ?? ''}
-                      onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                      placeholder="What is this agent for? (internal note)"
-                    />
-                  </div>
-                </div>
-              </section>
-
-              {/* MODEL */}
-              <section className="space-y-4 border-t border-border pt-5">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Model
-                </h3>
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div className="space-y-2 sm:col-span-2">
-                    <Label htmlFor="ag-model">Provider &amp; model</Label>
-                    <Select
-                      value={`${draft.model_provider}:${draft.model}`}
-                      onValueChange={(v) => {
-                        const val = v ?? `${draft.model_provider}:${draft.model}`;
-                        const [provider, ...rest] = val.split(':');
-                        setDraft({
-                          ...draft,
-                          model_provider: provider as 'openai' | 'anthropic',
-                          model: rest.join(':'),
-                        });
-                      }}
-                    >
-                      <SelectTrigger id="ag-model">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
-                        <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
-                        <SelectItem value="openai:gpt-4.1-mini">OpenAI · GPT-4.1 mini</SelectItem>
-                        <SelectItem value="anthropic:claude-sonnet-4-6">
-                          Anthropic · Claude Sonnet 4.6
-                        </SelectItem>
-                        <SelectItem value="anthropic:claude-3-5-haiku-latest">
-                          Anthropic · Claude Haiku
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <Label htmlFor="ag-temp">Temperature</Label>
-                      <Input
-                        id="ag-temp"
-                        type="number"
-                        min={0}
-                        max={1}
-                        step={0.1}
-                        value={draft.temperature}
-                        onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="ag-max">Max tokens</Label>
-                      <Input
-                        id="ag-max"
-                        type="number"
-                        min={128}
-                        step={128}
-                        value={draft.max_tokens}
-                        onChange={(e) => setDraft({ ...draft, max_tokens: Number(e.target.value) })}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </section>
-
-              {/* BEHAVIOR */}
-              <section className="space-y-4 border-t border-border pt-5">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Behavior
-                </h3>
-                <div className="space-y-2">
-                  <Label htmlFor="ag-prompt">System prompt *</Label>
-                  <Textarea
-                    id="ag-prompt"
-                    className="min-h-[140px] font-mono text-xs"
-                    value={draft.system_prompt}
-                    onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
-                    placeholder="You are the support assistant for…"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Tools</Label>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {TOOL_OPTIONS.map((tool) => (
-                      <label
-                        key={tool.id}
-                        className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors hover:bg-muted/50"
-                      >
-                        <input
-                          type="checkbox"
-                          className="mt-1"
-                          checked={draft.tools.includes(tool.id)}
-                          onChange={() => toggleTool(tool.id)}
-                        />
-                        <div>
-                          <p className="text-sm font-medium">{tool.label}</p>
-                          <p className="text-xs text-muted-foreground">{tool.desc}</p>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              </section>
-
-              {/* CHANNELS */}
-              <section className="space-y-4 border-t border-border pt-5">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Channels
-                </h3>
-                <div className="space-y-3 rounded-lg border p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">Website widget</p>
-                      <p className="text-xs text-muted-foreground">
-                        Embed a chat bubble on your website — conversations appear in the inbox.
-                      </p>
-                    </div>
-                    <Switch
-                      checked={draft.website_enabled}
-                      onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
-                    />
-                  </div>
-                  {draft.website_enabled && (
-                    <div className="grid gap-4 pt-1 sm:grid-cols-2">
+            {draft && (
+              <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+                {/* LEFT: basics + model */}
+                <div className="space-y-8">
+                  <section className="space-y-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Basics
+                    </h3>
+                    <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Label htmlFor="ag-wtitle">Widget title</Label>
+                        <Label htmlFor="ag-name">Name *</Label>
                         <Input
-                          id="ag-wtitle"
-                          value={draft.widget_title}
-                          onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
+                          id="ag-name"
+                          value={draft.name}
+                          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                          placeholder="e.g. Support Bot"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="ag-wcolor">Accent color</Label>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="color"
-                            className="h-9 w-12 cursor-pointer rounded-md border"
-                            value={draft.widget_primary_color}
-                            onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
-                          />
+                        <Label htmlFor="ag-desc">Description</Label>
+                        <Input
+                          id="ag-desc"
+                          value={draft.description ?? ''}
+                          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                          placeholder="Internal note"
+                        />
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="space-y-4 border-t border-border pt-6">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Model
+                    </h3>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="ag-model">Provider &amp; model</Label>
+                        <Select
+                          value={`${draft.model_provider}:${draft.model}`}
+                          onValueChange={(v) => {
+                            const val = v ?? `${draft.model_provider}:${draft.model}`;
+                            const [provider, ...rest] = val.split(':');
+                            setDraft({
+                              ...draft,
+                              model_provider: provider as 'openai' | 'anthropic',
+                              model: rest.join(':'),
+                            });
+                          }}
+                        >
+                          <SelectTrigger id="ag-model">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
+                            <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
+                            <SelectItem value="openai:gpt-4.1-mini">OpenAI · GPT-4.1 mini</SelectItem>
+                            <SelectItem value="anthropic:claude-sonnet-4-6">
+                              Anthropic · Claude Sonnet 4.6
+                            </SelectItem>
+                            <SelectItem value="anthropic:claude-3-5-haiku-latest">
+                              Anthropic · Claude Haiku
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label htmlFor="ag-temp">Temperature</Label>
                           <Input
-                            id="ag-wcolor"
-                            value={draft.widget_primary_color}
-                            onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                            id="ag-temp"
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.1}
+                            value={draft.temperature}
+                            onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="ag-max">Max tokens</Label>
+                          <Input
+                            id="ag-max"
+                            type="number"
+                            min={128}
+                            step={128}
+                            value={draft.max_tokens}
+                            onChange={(e) => setDraft({ ...draft, max_tokens: Number(e.target.value) })}
                           />
                         </div>
                       </div>
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label htmlFor="ag-welcome">Welcome message</Label>
-                        <Input
-                          id="ag-welcome"
-                          value={draft.widget_welcome_message}
-                          onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
+                    </div>
+                  </section>
+                </div>
+
+                {/* RIGHT: behavior + tools + channels */}
+                <div className="space-y-8">
+                  <section className="space-y-4 border-t border-border pt-6">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Behavior
+                    </h3>
+                    <div className="space-y-2">
+                      <Label htmlFor="ag-prompt">System prompt *</Label>
+                      <Textarea
+                        id="ag-prompt"
+                        className="min-h-[160px] font-mono text-xs leading-5"
+                        value={draft.system_prompt}
+                        onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
+                        placeholder="You are the support assistant for…"
+                      />
+                    </div>
+                  </section>
+
+                  <section className="space-y-4 border-t border-border pt-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        Tools
+                      </h3>
+                      <Button size="sm" variant="outline" onClick={addCustomTool}>
+                        <Plus className="mr-1 h-3.5 w-3.5" />
+                        New tool
+                      </Button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {PRESET_TOOL_OPTIONS.map((tool) => (
+                        <label
+                          key={tool.id}
+                          className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors hover:bg-muted/50"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={presetToolIds(draft.tools).includes(tool.id)}
+                            onChange={() => togglePresetTool(tool.id)}
+                          />
+                          <div>
+                            <p className="text-sm font-medium">{tool.label}</p>
+                            <p className="text-xs text-muted-foreground">{tool.desc}</p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                    {customTools.length > 0 && (
+                      <div className="mt-2 space-y-2">
+                        {customTools.map((tool) => (
+                          <div
+                            key={tool.id}
+                            className="flex items-start justify-between gap-2 rounded-lg border p-3"
+                          >
+                            <div>
+                              <p className="text-sm font-medium">{tool.name}</p>
+                              <p className="text-xs text-muted-foreground">{tool.description}</p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2"
+                                onClick={() => setEditingCustomTool(tool)}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-red-500"
+                                onClick={() => removeCustomTool(tool.id)}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="space-y-4 border-t border-border pt-6">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Channels
+                    </h3>
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium">Website widget</p>
+                          <p className="text-xs text-muted-foreground">
+                            Embed a chat bubble on your website — conversations appear in the inbox.
+                          </p>
+                        </div>
+                        <Switch
+                          checked={draft.website_enabled}
+                          onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
                         />
                       </div>
+                      {draft.website_enabled && (
+                        <div className="grid gap-4 pt-1 sm:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label htmlFor="ag-wtitle">Widget title</Label>
+                            <Input
+                              id="ag-wtitle"
+                              value={draft.widget_title}
+                              onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label htmlFor="ag-wcolor">Accent color</Label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                className="h-9 w-12 cursor-pointer rounded-md border"
+                                value={draft.widget_primary_color}
+                                onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                              />
+                              <Input
+                                id="ag-wcolor"
+                                value={draft.widget_primary_color}
+                                onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2 sm:col-span-2">
+                            <Label htmlFor="ag-welcome">Welcome message</Label>
+                            <Input
+                              id="ag-welcome"
+                              value={draft.widget_welcome_message}
+                              onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="ag-akey">
-                    Agent API key (optional — falls back to account AI key)
-                  </Label>
-                  <Input
-                    id="ag-akey"
-                    type="password"
-                    placeholder={keyPlaceholder ? '•••••••• (key saved — leave blank to keep)' : 'sk-… / anthropic key'}
-                    value={apiKeyInput}
-                    onChange={(e) => setApiKeyInput(e.target.value)}
-                  />
-                </div>
-
-                {draft.website_enabled && draft.widget_token && (
-                  <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
-                    <Label>Embed on your website</Label>
-                    <code className="block overflow-x-auto rounded bg-muted px-3 py-2 text-xs">
-                      {embedUrl(draft.widget_token)}
-                    </code>
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
-                        <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
-                      </Button>
-                      <a
-                        href={`/widget/preview?token=${draft.widget_token}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                      >
-                        Open preview ↗
-                      </a>
+                    <div className="space-y-2">
+                      <Label htmlFor="ag-akey">
+                        Agent API key (optional — falls back to account AI key)
+                      </Label>
+                      <Input
+                        id="ag-akey"
+                        type="password"
+                        placeholder={keyPlaceholder ? '•••••••• (key saved — leave blank to keep)' : 'sk-… / anthropic key'}
+                        value={apiKeyInput}
+                        onChange={(e) => setApiKeyInput(e.target.value)}
+                      />
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      Paste the snippet into your site&apos;s <code>&lt;body&gt;</code>.
-                      The preview opens the exact same widget on a test page.
-                    </p>
-                  </div>
-                )}
-              </section>
 
-              {error && <p className="text-sm text-red-500">{error}</p>}
-            </div>
-          )}
+                    {draft.website_enabled && draft.widget_token && (
+                      <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
+                        <Label>Embed on your website</Label>
+                        <code className="block overflow-x-auto rounded bg-muted px-3 py-2 text-xs">
+                          {embedUrl(draft.widget_token)}
+                        </code>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
+                            <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
+                          </Button>
+                          <a
+                            href={`/widget/preview?token=${draft.widget_token}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                          >
+                            Open preview ↗
+                          </a>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Paste the snippet into your site&apos;s <code>&lt;body&gt;</code>.
+                        </p>
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </div>
+            )}
 
-          <DialogFooter>
-            <Button variant="outline" onClick={close}>Cancel</Button>
+            {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
+          </div>
+
+          <DialogFooter className="border-t border-border px-6 py-4">
+            <Button variant="outline" onClick={close}>
+              Cancel
+            </Button>
             <Button onClick={save} disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {editingId ? 'Save changes' : 'Create agent'}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom tool editor */}
+      <Dialog open={!!editingCustomTool} onOpenChange={(o) => !o && setEditingCustomTool(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editingCustomTool && editingCustomTool.name ? 'Edit tool' : 'New custom tool'}</DialogTitle>
+          </DialogHeader>
+          {editingCustomTool && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="ct-name">Tool name *</Label>
+                <Input
+                  id="ct-name"
+                  value={editingCustomTool.name}
+                  onChange={(e) =>
+                    setEditingCustomTool({ ...editingCustomTool, name: e.target.value })
+                  }
+                  placeholder="e.g. check_order_status"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="ct-desc">Description</Label>
+                <Textarea
+                  id="ct-desc"
+                  className="min-h-[80px] text-xs"
+                  value={editingCustomTool.description}
+                  onChange={(e) =>
+                    setEditingCustomTool({ ...editingCustomTool, description: e.target.value })
+                  }
+                  placeholder="What does this tool do? When should the agent use it?"
+                />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Parameters</Label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setEditingCustomTool({
+                        ...editingCustomTool,
+                        parameters: [
+                          ...editingCustomTool.parameters,
+                          { name: '', type: 'string', description: '', required: true },
+                        ],
+                      })
+                    }
+                  >
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add parameter
+                  </Button>
+                </div>
+                {editingCustomTool.parameters.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No parameters yet. Add the fields the agent must fill to use this tool.
+                  </p>
+                )}
+                <div className="space-y-2">
+                  {editingCustomTool.parameters.map((param, idx) => (
+                    <div key={idx} className="grid grid-cols-12 gap-2 rounded-lg border p-2">
+                      <div className="col-span-4 space-y-1">
+                        <Label className="text-[11px]">Name</Label>
+                        <Input
+                          className="h-7 text-xs"
+                          value={param.name}
+                          onChange={(e) => {
+                            const next = [...editingCustomTool.parameters];
+                            next[idx] = { ...param, name: e.target.value };
+                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
+                          }}
+                          placeholder="e.g. order_id"
+                        />
+                      </div>
+                      <div className="col-span-3 space-y-1">
+                        <Label className="text-[11px]">Type</Label>
+                        <Select
+                          value={param.type}
+                          onValueChange={(v) => {
+                            const next = [...editingCustomTool.parameters];
+                            next[idx] = {
+                              ...param,
+                              type: v as CustomToolParameter['type'],
+                            };
+                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
+                          }}
+                        >
+                          <SelectTrigger className="h-7 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="string">Text</SelectItem>
+                            <SelectItem value="number">Number</SelectItem>
+                            <SelectItem value="boolean">True / False</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="col-span-3 space-y-1">
+                        <Label className="text-[11px]">Description</Label>
+                        <Input
+                          className="h-7 text-xs"
+                          value={param.description}
+                          onChange={(e) => {
+                            const next = [...editingCustomTool.parameters];
+                            next[idx] = { ...param, description: e.target.value };
+                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
+                          }}
+                          placeholder="What is this field?"
+                        />
+                      </div>
+                      <div className="col-span-2 flex flex-col items-end justify-between pt-4">
+                        <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            className="h-3 w-3"
+                            checked={param.required}
+                            onChange={(e) => {
+                              const next = [...editingCustomTool.parameters];
+                              next[idx] = { ...param, required: e.target.checked };
+                              setEditingCustomTool({ ...editingCustomTool, parameters: next });
+                            }}
+                          />
+                          Required
+                        </label>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-[11px] text-red-500"
+                          onClick={() => {
+                            const next = editingCustomTool.parameters.filter((_, i) => i !== idx);
+                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
+                          }}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setEditingCustomTool(null)}>
+                  Cancel
+                </Button>
+                <Button onClick={saveCustomTool} disabled={!editingCustomTool.name.trim()}>
+                  Save tool
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

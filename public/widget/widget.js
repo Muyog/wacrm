@@ -14,11 +14,20 @@
   window.__bamisoroWidget = true;
 
   var script = document.currentScript;
-  var base = (script && script.src ? script.src : '')
-    .replace(/\/widget\/api.*$/, '')
-    .replace(/\/?$/, '');
-  var token = (script && script.dataset.widget) || '';
-  var fallbackVisitor = (script && script.dataset.visitor) || '';
+  var base =
+    (script && script.src
+      ? script.src.replace(/\/widget\/widget\.js.*$/, '').replace(/[?#].*$/, '').replace(/\/$/, '')
+      : window.location.origin);
+  var token =
+    (script && script.dataset && script.dataset.widget) ||
+    (function () {
+      try {
+        return new URLSearchParams(window.location.search).get('widget') || '';
+      } catch (e) {
+        return '';
+      }
+    })();
+  var fallbackVisitor = (script && script.dataset && script.dataset.visitor) || '';
 
   function config() {
     return {
