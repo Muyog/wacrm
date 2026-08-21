@@ -499,35 +499,21 @@ export default function AgentsBuilderPage() {
                   </Card>
                 )}
 
-                {/* Tools summary */}
+                {/* Tools + prompt live in the Edit dialog — keep this
+                    page a clean overview. Show a one-line summary only. */}
                 <Card>
-                  <CardContent className="p-6">
-                    <h3 className="mb-3 font-semibold">Tools enabled</h3>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {TOOL_OPTIONS.map((tool) => {
-                        const on = selected.tools.includes(tool.id);
-                        return (
-                          <div key={tool.id} className={`flex items-start gap-3 rounded-xl border p-4 ${on ? '' : 'opacity-45'}`}>
-                            <tool.icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                            <div>
-                              <p className="text-sm font-medium">{tool.label}</p>
-                              <p className="text-xs text-muted-foreground">{tool.desc}</p>
-                            </div>
-                            <span className="ml-auto text-xs font-medium">{on ? 'On' : 'Off'}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* System prompt read-only */}
-                <Card>
-                  <CardContent className="space-y-2 p-6">
-                    <h3 className="font-semibold">System prompt</h3>
-                    <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-xs leading-relaxed text-muted-foreground">
-                      {selected.system_prompt}
-                    </pre>
+                  <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 p-5 text-sm text-muted-foreground">
+                    <span>
+                      <strong className="text-foreground">{selected.tools.length}</strong> tool{selected.tools.length === 1 ? '' : 's'} enabled
+                      {selected.tools.length > 0 && (
+                        <span className="ml-1">({selected.tools.map((t) => t === 'knowledge_base' ? 'Knowledge base' : t === 'handoff' ? 'Human handoff' : t).join(', ')})</span>
+                      )}
+                    </span>
+                    <span className="hidden sm:inline text-border">|</span>
+                    <span>Prompt: {selected.system_prompt.trim().split(/\s+/).length} words</span>
+                    <Button variant="link" size="sm" className="ml-auto h-auto p-0" onClick={() => openEdit(selected)}>
+                      Configure in editor →
+                    </Button>
                   </CardContent>
                 </Card>
               </>
@@ -588,7 +574,7 @@ export default function AgentsBuilderPage() {
 
       {/* ---------------- Edit dialog ---------------- */}
       <Dialog open={!!draft} onOpenChange={(o) => !o && close()}>
-        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
+        <DialogContent className="max-h-[94vh] w-full max-w-5xl overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bot className="h-5 w-5 text-primary" />
