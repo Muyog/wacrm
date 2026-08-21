@@ -13,17 +13,23 @@ import {
 
 import {
   loadActivity,
+  loadChannelsDonut,
   loadConversationsSeries,
+  loadMessagesDonut,
   loadMetrics,
   loadPipelineDonut,
   loadResponseTime,
+  loadTopics,
 } from '@/lib/dashboard/queries'
 import type {
   ActivityItem,
+  ChannelsDonutData,
   ConversationsSeriesPoint,
+  MessagesDonutData,
   MetricsBundle,
   PipelineDonutData,
   ResponseTimeSummary,
+  TopicsData,
 } from '@/lib/dashboard/types'
 
 import { MetricCard } from '@/components/dashboard/metric-card'
@@ -33,6 +39,9 @@ import { ConversationsChart } from '@/components/dashboard/conversations-chart'
 import { PipelineDonut } from '@/components/dashboard/pipeline-donut'
 import { ResponseTimeChart } from '@/components/dashboard/response-time-chart'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
+import { ChannelsDonut } from '@/components/dashboard/donuts'
+import { MessagesDonut } from '@/components/dashboard/donuts'
+import { TopicsCloud } from '@/components/dashboard/topics-cloud'
 
 import { useTranslations } from 'next-intl'
 
@@ -43,6 +52,12 @@ export default function DashboardPage() {
   const { defaultCurrency } = useAuth()
   const [metrics, setMetrics] = useState<MetricsBundle | null>(null)
   const [metricsLoading, setMetricsLoading] = useState(true)
+  const [channels, setChannels] = useState<ChannelsDonutData | null>(null)
+  const [channelsLoading, setChannelsLoading] = useState(true)
+  const [messagesBySender, setMessagesBySender] = useState<MessagesDonutData | null>(null)
+  const [messagesLoading, setMessagesLoading] = useState(true)
+  const [topics, setTopics] = useState<TopicsData | null>(null)
+  const [topicsLoading, setTopicsLoading] = useState(true)
 
   const [range, setRange] = useState<RangeDays>(30)
   // Keep a cache per range so switching tabs doesn't re-fetch what we
@@ -97,6 +112,21 @@ export default function DashboardPage() {
       .then((a) => setActivity(a))
       .catch((err) => console.error('[dashboard] activity failed:', err))
       .finally(() => setActivityLoading(false))
+
+    void loadChannelsDonut(db)
+      .then((c) => setChannels(c))
+      .catch((err) => console.error('[dashboard] channels donut failed:', err))
+      .finally(() => setChannelsLoading(false))
+
+    void loadMessagesDonut(db)
+      .then((m) => setMessagesBySender(m))
+      .catch((err) => console.error('[dashboard] messages donut failed:', err))
+      .finally(() => setMessagesLoading(false))
+
+    void loadTopics(db)
+      .then((t) => setTopics(t))
+      .catch((err) => console.error('[dashboard] topics failed:', err))
+      .finally(() => setTopicsLoading(false))
   }, [])
 
   useEffect(() => {
@@ -221,6 +251,13 @@ export default function DashboardPage() {
 
       {/* Activity feed */}
       <ActivityFeed items={activity} loading={activityLoading} />
+
+      {/* Donuts + topics */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="h-full"><ChannelsDonut data={channels} /></div>
+        <div className="h-full"><MessagesDonut data={messagesBySender} /></div>
+        <div className="h-full"><TopicsCloud data={topics} /></div>
+      </div>
     </div>
   )
 }

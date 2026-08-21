@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { loadAgentByWidgetToken, generateAgentReply } from '@/lib/ai/agent'
 import { resolveConversationForWidget, insertMessage } from '@/lib/agents/widget'
+import { extractAndTagTopics } from '@/lib/agents/topics'
 
 // Lazy admin client (service role) — public widget endpoints must not
 // depend on a user session.
@@ -81,6 +82,11 @@ export async function POST(
     }
 
     await insertMessage(admin(), ctx.conversationId, 'customer', text)
+
+    // Extract topics from the customer message
+    if (agent.account_id) {
+      await extractAndTagTopics(admin(), agent.account_id, ctx.conversationId, text)
+    }
 
     let reply = ''
     try {

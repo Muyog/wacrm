@@ -15,6 +15,38 @@ export interface MetricsBundle {
   messagesSentToday: MetricDelta
 }
 
+// --- Donut analytics ---
+
+export interface ChannelSlice {
+  channel: string
+  count: number
+}
+
+export interface ChannelsDonutData {
+  slices: ChannelSlice[]
+}
+
+export interface MessageSenderSlice {
+  sender: 'customer' | 'agent' | 'bot'
+  label: string
+  count: number
+}
+
+export interface MessagesDonutData {
+  slices: MessageSenderSlice[]
+}
+
+export interface TopicRow {
+  id: string
+  label: string
+  color: string
+  count: number
+}
+
+export interface TopicsData {
+  rows: TopicRow[]
+}
+
 export interface ConversationsSeriesPoint {
   day: string // YYYY-MM-DD local
   incoming: number

@@ -9,12 +9,15 @@ import {
 } from './date-utils'
 import type {
   ActivityItem,
+  ChannelsDonutData,
   ConversationsSeriesPoint,
+  MessagesDonutData,
   MetricsBundle,
   PipelineDonutData,
   PipelineStageSlice,
   ResponseTimeBucket,
   ResponseTimeSummary,
+  TopicsData,
 } from './types'
 
 // ------------------------------------------------------------
@@ -395,4 +398,62 @@ export async function loadActivity(db: DB, limit = 20): Promise<ActivityItem[]> 
   return items
     .sort((a, b) => (a.at > b.at ? -1 : a.at < b.at ? 1 : 0))
     .slice(0, limit)
+}
+
+// --- 5. Channel breakdown (donut) -------------------------------------
+
+export async function loadChannelsDonut(db: DB): Promise<ChannelsDonutData> {
+  const { data, error } = await db.from('conversations').select('channel')
+  if (error || !data) return { slices: [] }
+  const counts: Record<string, number> = {}
+  for (const row of data as { channel: string }[]) {
+    counts[row.channel] = (counts[row.channel] || 0) + 1
+  }
+  const slices = Object.entries(counts).map(([channel, count]) => ({ channel, count }))
+  return { slices }
+}
+
+// --- 6. Messages by sender (donut) ------------------------------------
+
+export async function loadMessagesDonut(db: DB): Promise<MessagesDonutData> {
+  const { data, error } = await db.from('messages').select('sender_type')
+  if (error || !data) return { slices: [] }
+  const labels: Record<string, string> = {
+    customer: 'Customers',
+    agent: 'Agents',
+    bot: 'AI / Bots',
+  }
+  const counts: Record<string, number> = {}
+  for (const row of data as { sender_type: string }[]) {
+    counts[row.sender_type] = (counts[row.sender_type] || 0) + 1
+  }
+  const slices = Object.entries(counts)
+    .filter(([sender]) => labels[sender])
+    .map(([sender, count]) => ({
+      sender: sender as 'customer' | 'agent' | 'bot',
+      label: labels[sender],
+      count,
+    }))
+  return { slices }
+}
+
+// --- 7. Topics (analytics) ---------------------------------------------
+
+export async function loadTopics(db: DB): Promise<TopicsData> {
+  const { data, error } = await db
+    .from('conversation_topics')
+    .select('topic_id, topics!inner(id, label, color)')
+  if (error || !data) return { rows: [] }
+  const counts: Record<string, { label: string; color: string; count: number }> = {}
+  for (const row of data) {
+    const topic = (row as { topics: { id: string; label: string; color: string }[] }).topics[0]
+    const topicId = (row as { topic_id: string }).topic_id
+    if (!counts[topicId]) counts[topicId] = { label: topic.label, color: topic.color, count: 0 }
+    counts[topicId].count++
+  }
+  const rows = Object.entries(counts)
+    .map(([id, v]) => ({ id, label: v.label, color: v.color, count: v.count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8)
+  return { rows }
 }

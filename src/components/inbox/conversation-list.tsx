@@ -9,7 +9,7 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X } from "lucide-react";
+import { Search, ChevronDown, X, Globe, Mail, MessageSquare } from 'lucide-react'
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
@@ -436,30 +436,39 @@ function ConversationItem({
   onSelect,
   t,
 }: ConversationItemProps) {
-  const contact = conversation.contact;
-  const displayName = contact?.name || contact?.phone || t("unknown");
-  const initials = displayName.charAt(0).toUpperCase();
+  const contact = conversation.contact
+  const displayName = contact?.name || contact?.phone || t('unknown')
+  const initials = displayName.charAt(0).toUpperCase()
+  const channel = conversation.channel || 'whatsapp'
 
   const handleClick = useCallback(() => {
-    onSelect(conversation);
-  }, [onSelect, conversation]);
+    onSelect(conversation)
+  }, [onSelect, conversation])
 
   const timeAgo = conversation.last_message_at
     ? formatDistanceToNow(new Date(conversation.last_message_at), {
         addSuffix: false,
       })
-    : "";
+    : ''
+
+  const CHANNELS: Record<string, { icon: typeof MessageSquare; color: string; label: string }> = {
+    whatsapp: { icon: MessageSquare, color: '#25D366', label: 'WhatsApp' },
+    website: { icon: Globe, color: '#7c3aed', label: 'Website' },
+    email: { icon: Mail, color: '#f59e0b', label: 'Email' },
+  }
+  const meta = CHANNELS[channel] || CHANNELS.whatsapp
+  const ChannelIcon = meta.icon
 
   return (
     <button
       onClick={handleClick}
       className={cn(
-        "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
-        isActive && "border-l-2 border-primary bg-muted/70"
+        'flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50',
+        isActive && 'border-l-2 border-primary bg-muted/70',
       )}
     >
       {/* Avatar */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+      <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
         {contact?.avatar_url ? (
           <img
             src={contact.avatar_url}
@@ -469,6 +478,12 @@ function ConversationItem({
         ) : (
           initials
         )}
+        <span
+          className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border-2 border-card"
+          style={{ backgroundColor: meta.color }}
+        >
+          <ChannelIcon className="h-2.5 w-2.5 text-white" />
+        </span>
       </div>
 
       {/* Content */}

@@ -160,7 +160,11 @@ export type ConversationStatus = 'open' | 'pending' | 'closed';
 export interface Conversation {
   id: string;
   user_id: string;
+  account_id?: string;
   contact_id: string;
+  channel?: 'whatsapp' | 'website' | 'email';
+  visitor_id?: string;
+  agent_id?: string;
   status: ConversationStatus;
   assigned_agent_id?: string;
   last_message_text?: string;
