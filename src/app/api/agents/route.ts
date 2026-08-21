@@ -52,8 +52,13 @@ export async function POST(req: Request) {
         system_prompt:
           body.system_prompt?.trim() ||
           'You are a helpful assistant for this business.',
-        model_provider: body.model_provider === 'anthropic' ? 'anthropic' : 'openai',
-        model: body.model || (body.model_provider === 'anthropic' ? 'claude-sonnet-4-6' : 'gpt-4o-mini'),
+        model_provider:
+          body.model_provider === 'anthropic'
+            ? 'anthropic'
+            : body.model_provider === 'gemini'
+              ? 'gemini'
+              : 'openai',
+        model: body.model || (body.model_provider === 'anthropic' ? 'claude-sonnet-4-6' : body.model_provider === 'gemini' ? 'gemini-2.5-flash' : 'gpt-4o-mini'),
         temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
         max_tokens: typeof body.max_tokens === 'number' ? body.max_tokens : 1024,
         tools: Array.isArray(body.tools) ? body.tools : [],

@@ -21,7 +21,7 @@ export interface AgentRow {
   description: string | null
   avatar_url: string | null
   system_prompt: string
-  model_provider: 'openai' | 'anthropic'
+  model_provider: 'openai' | 'anthropic' | 'gemini'
   model: string
   temperature: number
   max_tokens: number

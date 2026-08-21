@@ -31,7 +31,7 @@ interface Agent {
   description: string | null;
   avatar_url: string | null;
   system_prompt: string;
-  model_provider: 'openai' | 'anthropic';
+  model_provider: 'openai' | 'anthropic' | 'gemini';
   model: string;
   temperature: number;
   max_tokens: number;
@@ -511,7 +511,7 @@ export default function AgentsBuilderPage() {
                             const [provider, ...rest] = val.split(':');
                             setDraft({
                               ...draft,
-                              model_provider: provider as 'openai' | 'anthropic',
+                              model_provider: provider as 'openai' | 'anthropic' | 'gemini',
                               model: rest.join(':'),
                             });
                           }}
@@ -523,6 +523,8 @@ export default function AgentsBuilderPage() {
                             <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
                             <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
                             <SelectItem value="openai:gpt-4.1-mini">OpenAI · GPT-4.1 mini</SelectItem>
+                            <SelectItem value="gemini:gemini-2.5-flash">Google · Gemini 2.5 Flash</SelectItem>
+                            <SelectItem value="gemini:gemini-2.5-pro">Google · Gemini 2.5 Pro</SelectItem>
                             <SelectItem value="anthropic:claude-sonnet-4-6">
                               Anthropic · Claude Sonnet 4.6
                             </SelectItem>
