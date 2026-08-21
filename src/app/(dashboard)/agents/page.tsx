@@ -1,9 +1,34 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bot, Plus, Pencil, Trash2, ExternalLink, Copy, Check, Loader2 } from 'lucide-react';
+/**
+ * AI Agents — builder + live widget preview.
+ *
+ * Layout: full-width workspace. Left = agent list / editor form.
+ * Right = sticky live chat panel that talks to the real agent through
+ * the same public widget API the embeddable bubble uses, so what you
+ * test here is exactly what a website visitor experiences.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Bot,
+  Plus,
+  Pencil,
+  Trash2,
+  ExternalLink,
+  Copy,
+  Check,
+  Loader2,
+  Send,
+  X,
+  Globe,
+  MessageCircle,
+  BookOpen,
+  HandMetal,
+  Sparkles,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -35,7 +60,7 @@ interface Agent {
   model: string;
   temperature: number;
   max_tokens: number;
-  tools: (string | Record<string, unknown>)[];
+  tools: string[];
   auto_reply_enabled: boolean;
   website_enabled: boolean;
   widget_token: string | null;
@@ -46,28 +71,10 @@ interface Agent {
   is_active: boolean;
 }
 
-interface CustomToolParameter {
-  name: string;
-  type: 'string' | 'number' | 'boolean';
-  description: string;
-  required: boolean;
-}
-
-interface CustomToolDefinition {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  parameters: CustomToolParameter[];
-}
-
-const PRESET_TOOL_OPTIONS: { id: string; label: string; desc: string }[] = [
-  { id: 'knowledge_base', label: 'Knowledge base', desc: 'Answer from your uploaded docs (FAQs, policies, products).' },
-  { id: 'handoff', label: 'Human handoff', desc: 'Hand over to a human agent when the visitor asks or when unsure.' },
-  { id: 'calendar', label: 'Booking / scheduling', desc: 'Reserve for a future scheduling integration.' },
+const TOOL_OPTIONS = [
+  { id: 'knowledge_base', label: 'Knowledge base', desc: 'Answer from your uploaded docs — FAQs, policies, products.', icon: BookOpen },
+  { id: 'handoff', label: 'Human handoff', desc: 'Pass the chat to a human agent when unsure or asked.', icon: HandMetal },
 ];
-
-const PRESET_TOOL_IDS = PRESET_TOOL_OPTIONS.map((tool) => tool.id);
 
 function emptyAgent(): Omit<Agent, 'id'> {
   return {
@@ -76,8 +83,8 @@ function emptyAgent(): Omit<Agent, 'id'> {
     avatar_url: null,
     system_prompt:
       'You are a helpful assistant for this business. Be concise, friendly, and accurate. If you cannot help, say so and offer to connect the customer with a human.',
-    model_provider: 'openai',
-    model: 'gpt-4o-mini',
+    model_provider: 'gemini',
+    model: 'gemini-2.5-flash',
     temperature: 0.7,
     max_tokens: 1024,
     tools: ['knowledge_base', 'handoff'],
@@ -92,65 +99,139 @@ function emptyAgent(): Omit<Agent, 'id'> {
   };
 }
 
-function presetToolIds(tools: (string | Record<string, unknown>)[]): string[] {
-  return tools.filter((t): t is string => typeof t === 'string');
-}
+/* ------------------------------------------------------------------ */
+/* Live chat preview — talks through the public widget API             */
+/* ------------------------------------------------------------------ */
 
-function customToolDefs(tools: (string | Record<string, unknown>)[]): CustomToolDefinition[] {
-  return tools
-    .filter((t): t is Record<string, unknown> => typeof t === 'object' && !!t)
-    .map((t) => ({
-      id: String(t.id ?? t.name ?? crypto.randomUUID()),
-      name: String(t.name ?? ''),
-      description: String(t.description ?? ''),
-      enabled: true,
-      parameters: Array.isArray(t.parameters)
-        ? (t.parameters as Record<string, unknown>[]).map((p) => ({
-            name: String(p.name ?? ''),
-            type: (p.type === 'number' || p.type === 'boolean' ? p.type : 'string') as CustomToolParameter['type'],
-            description: String(p.description ?? ''),
-            required: !!p.required,
-          }))
-        : [],
-    }));
-}
+function ChatPreview({ agent }: { agent: Agent }) {
+  const [messages, setMessages] = useState<{ role: 'bot' | 'user'; text: string }[]>([]);
+  const [input, setInput] = useState('');
+  const [busy, setBusy] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const visitorRef = useRef<string>('');
 
-function uid(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return 'xxxx-xxxx-xxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16));
-}
+  // Reset the thread when switching agents.
+  useEffect(() => {
+    setMessages([{ role: 'bot', text: agent.widget_welcome_message || 'Hi! How can we help you today?' }]);
+    visitorRef.current = 'preview-' + agent.id.slice(0, 8) + '-' + Math.random().toString(36).slice(2, 8);
+  }, [agent.id, agent.widget_welcome_message]);
 
-function encodeCustomTool(tool: CustomToolDefinition): Record<string, unknown> {
-  return {
-    id: tool.id,
-    name: tool.name,
-    description: tool.description,
-    type: 'custom',
-    parameters: tool.parameters,
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
+  }, [messages, busy]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy || !agent.widget_token) return;
+    setInput('');
+    setMessages((m) => [...m, { role: 'user', text }]);
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/widget/${agent.widget_token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, visitor: visitorRef.current, name: 'You (preview)' }),
+      });
+      const data = await res.json();
+      setMessages((m) => [
+        ...m,
+        { role: 'bot', text: data.reply || '(no reply — check the agent has an API key configured)' },
+      ]);
+    } catch {
+      setMessages((m) => [...m, { role: 'bot', text: 'Network error — please try again.' }]);
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const color = agent.widget_primary_color || '#7c3aed';
+
+  return (
+    <div className="flex h-[560px] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm">
+      {/* Header mimicking the real widget */}
+      <div className="flex items-center gap-3 px-4 py-3" style={{ backgroundColor: color }}>
+        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20">
+          <Bot className="h-5 w-5 text-white" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-white">
+            {agent.widget_title || agent.name}
+          </p>
+          <p className="flex items-center gap-1.5 text-xs text-white/80">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
+            Live preview — replies come from your agent
+          </p>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div ref={bodyRef} className="flex-1 space-y-3 overflow-y-auto bg-muted/30 p-4">
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div
+              className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
+              style={
+                m.role === 'user'
+                  ? { backgroundColor: color, color: '#fff', borderBottomRightRadius: 6 }
+                  : { backgroundColor: 'hsl(var(--card))', color: 'hsl(var(--foreground))', border: '1px solid hsl(var(--border))', borderBottomLeftRadius: 6 }
+              }
+            >
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {busy && (
+          <div className="flex justify-start">
+            <div className="rounded-2xl border bg-card px-4 py-2.5">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Composer */}
+      <div className="flex items-center gap-2 border-t bg-card p-3">
+        <Input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
+          placeholder={agent.widget_token ? 'Type a message…' : 'Enable the website widget to test'}
+          disabled={!agent.widget_token || busy}
+        />
+        <Button size="icon" onClick={send} disabled={!agent.widget_token || busy || !input.trim()} style={{ backgroundColor: color }}>
+          <Send className="h-4 w-4 text-white" />
+        </Button>
+      </div>
+    </div>
+  );
 }
+
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
 
 export default function AgentsBuilderPage() {
   const { accountRole } = useAuth();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Omit<Agent, 'id'> | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-  const [keyPlaceholder, setKeyPlaceholder] = useState<string | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const [customTools, setCustomTools] = useState<CustomToolDefinition[]>([]);
-  const [editingCustomTool, setEditingCustomTool] = useState<CustomToolDefinition | null>(null);
+  const [hasKey, setHasKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const canEdit = accountRole === 'owner' || accountRole === 'admin';
 
   const loadAgents = useCallback(async () => {
     try {
       const res = await fetch('/api/agents');
       const data = await res.json();
-      setAgents(Array.isArray(data.agents) ? data.agents : []);
+      const list: Agent[] = Array.isArray(data.agents) ? data.agents : [];
+      setAgents(list);
+      setSelectedId((prev) => prev ?? list[0]?.id ?? null);
     } catch {
       setAgents([]);
     } finally {
@@ -162,29 +243,33 @@ export default function AgentsBuilderPage() {
     loadAgents();
   }, [loadAgents]);
 
-  const origin =
-    typeof window !== 'undefined' ? window.location.origin : '';
+  const selected = agents.find((a) => a.id === selectedId) ?? null;
 
+  // Load has_key for the selected agent.
+  useEffect(() => {
+    if (!selectedId) return;
+    fetch(`/api/agents/${selectedId}`)
+      .then((r) => r.json())
+      .then((d) => setHasKey(!!d?.has_key))
+      .catch(() => setHasKey(false));
+  }, [selectedId]);
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const embedCode = (token: string | null) =>
     token
       ? `<script src="${origin}/widget/widget.js" data-widget="${token}" defer></script>`
       : '';
 
-  const embedUrl = (token: string | null) => embedCode(token);
-
   const openNew = () => {
     setEditingId(null);
     setDraft({ ...emptyAgent() });
-    setCustomTools([]);
-    setKeyPlaceholder(null);
     setApiKeyInput('');
     setError(null);
   };
 
   const openEdit = (agent: Agent) => {
+    setSelectedId(agent.id);
     setEditingId(agent.id);
-    const presets = presetToolIds(agent.tools);
-    const custom = customToolDefs(agent.tools);
     setDraft({
       name: agent.name,
       description: agent.description ?? '',
@@ -194,7 +279,7 @@ export default function AgentsBuilderPage() {
       model: agent.model,
       temperature: agent.temperature,
       max_tokens: agent.max_tokens,
-      tools: agent.tools,
+      tools: [...agent.tools],
       auto_reply_enabled: agent.auto_reply_enabled,
       website_enabled: agent.website_enabled,
       widget_token: agent.widget_token,
@@ -204,8 +289,6 @@ export default function AgentsBuilderPage() {
       widget_position: agent.widget_position,
       is_active: agent.is_active,
     });
-    setCustomTools(custom);
-    setKeyPlaceholder('has-key');
     setApiKeyInput('');
     setError(null);
   };
@@ -213,13 +296,7 @@ export default function AgentsBuilderPage() {
   const close = () => {
     setDraft(null);
     setEditingId(null);
-    setEditingCustomTool(null);
   };
-
-  const buildToolPayload = useCallback((): (string | Record<string, unknown>)[] => {
-    if (!draft) return [];
-    return [...presetToolIds(draft.tools), ...customTools.map(encodeCustomTool)];
-  }, [draft, customTools]);
 
   const save = async () => {
     if (!draft) return;
@@ -232,10 +309,10 @@ export default function AgentsBuilderPage() {
     try {
       const payload: Record<string, unknown> = {
         ...draft,
-        tools: buildToolPayload(),
         generate_widget: draft.website_enabled && !draft.widget_token,
       };
       if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
+
       const res = await fetch(editingId ? `/api/agents/${editingId}` : '/api/agents', {
         method: editingId ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -243,12 +320,9 @@ export default function AgentsBuilderPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Save failed');
-      if (editingId) {
-        const hk = await fetch(`/api/agents/${editingId}`);
-        const hkd = await hk.json();
-        setKeyPlaceholder(hkd?.has_key ? 'has-key' : null);
-      }
+
       await loadAgents();
+      if (!editingId && data.agent?.id) setSelectedId(data.agent.id);
       close();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
@@ -258,97 +332,53 @@ export default function AgentsBuilderPage() {
   };
 
   const remove = async (agent: Agent) => {
-    if (!confirm(`Delete agent "${agent.name}"? This also disables its website widget and unbinds its WhatsApp numbers.`)) return;
-    try {
-      await fetch(`/api/agents/${agent.id}`, { method: 'DELETE' });
-      await loadAgents();
-    } catch {}
+    if (!confirm(`Delete "${agent.name}"? Its widget stops working and its WhatsApp numbers become unbound.`)) return;
+    await fetch(`/api/agents/${agent.id}`, { method: 'DELETE' }).catch(() => {});
+    if (selectedId === agent.id) setSelectedId(null);
+    await loadAgents();
   };
 
-  const togglePresetTool = (toolId: string) => {
+  const toggleTool = (toolId: string) => {
     if (!draft) return;
-    const current = presetToolIds(draft.tools);
-    const next = current.includes(toolId)
-      ? current.filter((t) => t !== toolId)
-      : [...current, toolId];
     setDraft({
       ...draft,
-      tools: [...next, ...customToolDefs(draft.tools)],
-    } as Omit<Agent, 'id'>);
-  };
-
-  const addCustomTool = () => {
-    setEditingCustomTool({
-      id: uid(),
-      name: '',
-      description: '',
-      enabled: true,
-      parameters: [],
+      tools: draft.tools.includes(toolId)
+        ? draft.tools.filter((t) => t !== toolId)
+        : [...draft.tools, toolId],
     });
-  };
-
-  const saveCustomTool = () => {
-    if (!editingCustomTool || !editingCustomTool.name.trim()) return;
-    setCustomTools((prev) => {
-      const exists = prev.some((t) => t.id === editingCustomTool.id);
-      const next = exists
-        ? prev.map((t) => (t.id === editingCustomTool.id ? editingCustomTool : t))
-        : [...prev, editingCustomTool];
-      if (draft) {
-        setDraft({
-          ...draft,
-          tools: [...presetToolIds(draft.tools), ...next.map(encodeCustomTool)] as Agent['tools'],
-        });
-      }
-      return next;
-    });
-    setEditingCustomTool(null);
-  };
-
-  const removeCustomTool = (id: string) => {
-    setCustomTools((prev) => prev.filter((t) => t.id !== id));
-    if (draft) {
-      setDraft({
-        ...draft,
-        tools: [
-          ...presetToolIds(draft.tools),
-          ...customToolDefs(draft.tools).filter((t) => t.id !== id).map(encodeCustomTool),
-        ] as Agent['tools'],
-      });
-    }
   };
 
   const copyEmbed = async (token: string | null) => {
     if (!token) return;
     try {
-      await navigator.clipboard.writeText(embedUrl(token));
+      await navigator.clipboard.writeText(embedCode(token));
       setCopied(token);
       setTimeout(() => setCopied(null), 2000);
     } catch {}
   };
 
-  const canEdit = accountRole === 'owner' || accountRole === 'admin';
-
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center text-muted-foreground">
-        Loading agents…
-      </div>
+      <div className="flex h-64 items-center justify-center text-muted-foreground">Loading agents…</div>
     );
   }
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-6 p-6 lg:p-8">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Agents</h1>
-          <p className="text-sm text-muted-foreground">
-            AI agents for WhatsApp and your website — each with its own prompt, tools and channels.{' '}
-            <a href="/agents/playground" className="underline hover:text-foreground">Open AI playground →</a>
+          <h1 className="text-2xl font-bold tracking-tight">AI Agents</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Build assistants for WhatsApp and your website — prompt, model, tools, channels.
+            {' '}
+            <a href="/agents/playground" className="underline underline-offset-2 hover:text-foreground">
+              Open playground →
+            </a>
           </p>
         </div>
         {canEdit && (
-          <Button onClick={openNew}>
+          <Button onClick={openNew} size="lg">
             <Plus className="mr-2 h-4 w-4" /> New Agent
           </Button>
         )}
@@ -356,555 +386,424 @@ export default function AgentsBuilderPage() {
 
       {agents.length === 0 ? (
         <Card className="border-dashed">
-          <CardContent className="pt-12 pb-12 flex flex-col items-center text-center gap-3">
-            <div className="h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center">
-              <Bot className="h-6 w-6 text-primary" />
+          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+              <Bot className="h-7 w-7 text-primary" />
             </div>
             <div>
               <p className="font-medium">No agents yet</p>
-              <p className="text-sm text-muted-foreground max-w-md">
-                Create your first AI agent — give it instructions, pick a model and provider, and
-                connect it to WhatsApp numbers or a website widget.
+              <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                Create your first AI agent — give it instructions, pick a model, connect WhatsApp
+                numbers or a website widget.
               </p>
             </div>
             {canEdit && (
-              <Button onClick={openNew}>
+              <Button onClick={openNew} className="mt-2">
                 <Plus className="mr-2 h-4 w-4" /> Create your first agent
               </Button>
             )}
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {agents.map((agent) => (
-            <Card key={agent.id}>
-              <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                      <Bot className="h-5 w-5 text-primary" />
+        /* Wide two-column workspace */
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
+          {/* LEFT: editor / details */}
+          <div className="min-w-0 space-y-6">
+            {!draft && selected && (
+              <>
+                {/* Identity strip */}
+                <Card>
+                  <CardContent className="flex flex-wrap items-center gap-5 p-6">
+                    <div
+                      className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl"
+                      style={{ backgroundColor: (selected.widget_primary_color || '#7c3aed') + '22' }}
+                    >
+                      <Bot className="h-8 w-8" style={{ color: selected.widget_primary_color || '#7c3aed' }} />
                     </div>
-                    <div>
-                      <CardTitle className="text-base">{agent.name}</CardTitle>
-                      <CardDescription className="text-xs">
-                        {agent.model_provider} · {agent.model}
-                      </CardDescription>
-                    </div>
-                  </div>
-                  {agent.is_active ? (
-                    <Badge variant="default">Active</Badge>
-                  ) : (
-                    <Badge variant="secondary">Paused</Badge>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground line-clamp-2">
-                  {agent.description || 'No description'}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {agent.website_enabled && (
-                    <Badge variant="outline">🌐 Website</Badge>
-                  )}
-                  <Badge variant="outline">💬 WhatsApp</Badge>
-                  {agent.tools.includes('knowledge_base') && (
-                    <Badge variant="outline">📚 Knowledge</Badge>
-                  )}
-                  {agent.tools.includes('handoff') && (
-                    <Badge variant="outline">🤝 Handoff</Badge>
-                  )}
-                </div>
-                <div className="flex gap-2 pt-1">
-                  {canEdit && (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => openEdit(agent)}>
-                        <Pencil className="mr-1 h-3 w-3" /> Edit
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => remove(agent)}>
-                        <Trash2 className="mr-1 h-3 w-3" /> Delete
-                      </Button>
-                    </>
-                  )}
-                  {agent.website_enabled && agent.widget_token && (
-                    <div className="ml-auto flex items-center gap-1">
-                      <a
-                        href={`/widget/preview?token=${agent.widget_token}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex h-7 items-center rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      >
-                        Preview ↗
-                      </a>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => copyEmbed(agent.widget_token)}
-                      >
-                        {copied === agent.widget_token ? (
-                          <Check className="mr-1 h-3 w-3" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="truncate text-xl font-bold">{selected.name}</h2>
+                        {selected.is_active ? (
+                          <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" variant="secondary">Active</Badge>
                         ) : (
-                          <Copy className="mr-1 h-3 w-3" />
+                          <Badge variant="secondary">Paused</Badge>
                         )}
-                        Embed
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {/* Editor */}
-      <Dialog open={!!draft} onOpenChange={(o) => !o && close()}>
-        <DialogContent className="max-h-[92vh] overflow-hidden p-0">
-          <div className="max-h-[92vh] overflow-y-auto px-6 py-6">
-            <DialogHeader className="mb-6">
-              <DialogTitle>{editingId ? 'Edit agent' : 'New agent'}</DialogTitle>
-              <p className="text-sm text-muted-foreground">
-                Build one AI agent and use it across WhatsApp and your website widget.
-              </p>
-            </DialogHeader>
-
-            {draft && (
-              <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-                {/* LEFT: basics + model */}
-                <div className="space-y-8">
-                  <section className="space-y-4">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Basics
-                    </h3>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="ag-name">Name *</Label>
-                        <Input
-                          id="ag-name"
-                          value={draft.name}
-                          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                          placeholder="e.g. Support Bot"
-                        />
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="ag-desc">Description</Label>
-                        <Input
-                          id="ag-desc"
-                          value={draft.description ?? ''}
-                          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                          placeholder="Internal note"
-                        />
+                      <p className="mt-0.5 text-sm text-muted-foreground">
+                        {selected.description || 'No description'}
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        <Badge variant="outline" className="gap-1">
+                          <Sparkles className="h-3 w-3" /> {selected.model_provider} · {selected.model}
+                        </Badge>
+                        {selected.website_enabled && selected.widget_token && (
+                          <Badge variant="outline" className="gap-1"><Globe className="h-3 w-3" /> Website</Badge>
+                        )}
+                        <Badge variant="outline" className="gap-1"><MessageCircle className="h-3 w-3" /> WhatsApp</Badge>
+                        {hasKey ? (
+                          <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">API key ✓</Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">No API key</Badge>
+                        )}
                       </div>
                     </div>
-                  </section>
-
-                  <section className="space-y-4 border-t border-border pt-6">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Model
-                    </h3>
-                    <div className="space-y-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="ag-model">Provider &amp; model</Label>
-                        <Select
-                          value={`${draft.model_provider}:${draft.model}`}
-                          onValueChange={(v) => {
-                            const val = v ?? `${draft.model_provider}:${draft.model}`;
-                            const [provider, ...rest] = val.split(':');
-                            setDraft({
-                              ...draft,
-                              model_provider: provider as 'openai' | 'anthropic' | 'gemini',
-                              model: rest.join(':'),
-                            });
-                          }}
+                    {canEdit && (
+                      <div className="flex flex-wrap gap-2">
+                        <Button onClick={() => openEdit(selected)}>
+                          <Pencil className="mr-2 h-4 w-4" /> Edit agent
+                        </Button>
+                        {selected.website_enabled && selected.widget_token && (
+                          <>
+                            <a
+                          href={`/widget/preview?token=${selected.widget_token}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-transparent px-4 text-sm font-medium transition-colors hover:bg-muted"
                         >
-                          <SelectTrigger id="ag-model">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
-                            <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
-                            <SelectItem value="openai:gpt-4.1-mini">OpenAI · GPT-4.1 mini</SelectItem>
-                            <SelectItem value="gemini:gemini-2.5-flash">Google · Gemini 2.5 Flash</SelectItem>
-                            <SelectItem value="gemini:gemini-2.5-pro">Google · Gemini 2.5 Pro</SelectItem>
-                            <SelectItem value="anthropic:claude-sonnet-4-6">
-                              Anthropic · Claude Sonnet 4.6
-                            </SelectItem>
-                            <SelectItem value="anthropic:claude-3-5-haiku-latest">
-                              Anthropic · Claude Haiku
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-2">
-                          <Label htmlFor="ag-temp">Temperature</Label>
-                          <Input
-                            id="ag-temp"
-                            type="number"
-                            min={0}
-                            max={1}
-                            step={0.1}
-                            value={draft.temperature}
-                            onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="ag-max">Max tokens</Label>
-                          <Input
-                            id="ag-max"
-                            type="number"
-                            min={128}
-                            step={128}
-                            value={draft.max_tokens}
-                            onChange={(e) => setDraft({ ...draft, max_tokens: Number(e.target.value) })}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-                </div>
-
-                {/* RIGHT: behavior + tools + channels */}
-                <div className="space-y-8">
-                  <section className="space-y-4 border-t border-border pt-6">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Behavior
-                    </h3>
-                    <div className="space-y-2">
-                      <Label htmlFor="ag-prompt">System prompt *</Label>
-                      <Textarea
-                        id="ag-prompt"
-                        className="min-h-[160px] font-mono text-xs leading-5"
-                        value={draft.system_prompt}
-                        onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
-                        placeholder="You are the support assistant for…"
-                      />
-                    </div>
-                  </section>
-
-                  <section className="space-y-4 border-t border-border pt-6">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                        Tools
-                      </h3>
-                      <Button size="sm" variant="outline" onClick={addCustomTool}>
-                        <Plus className="mr-1 h-3.5 w-3.5" />
-                        New tool
-                      </Button>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {PRESET_TOOL_OPTIONS.map((tool) => (
-                        <label
-                          key={tool.id}
-                          className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors hover:bg-muted/50"
-                        >
-                          <input
-                            type="checkbox"
-                            className="mt-1"
-                            checked={presetToolIds(draft.tools).includes(tool.id)}
-                            onChange={() => togglePresetTool(tool.id)}
-                          />
-                          <div>
-                            <p className="text-sm font-medium">{tool.label}</p>
-                            <p className="text-xs text-muted-foreground">{tool.desc}</p>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                    {customTools.length > 0 && (
-                      <div className="mt-2 space-y-2">
-                        {customTools.map((tool) => (
-                          <div
-                            key={tool.id}
-                            className="flex items-start justify-between gap-2 rounded-lg border p-3"
-                          >
-                            <div>
-                              <p className="text-sm font-medium">{tool.name}</p>
-                              <p className="text-xs text-muted-foreground">{tool.description}</p>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2"
-                                onClick={() => setEditingCustomTool(tool)}
-                              >
-                                Edit
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2 text-red-500"
-                                onClick={() => removeCustomTool(tool.id)}
-                              >
-                                Remove
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
+                          <ExternalLink className="h-4 w-4" /> Full-page preview
+                        </a>
+                            <Button variant="outline" onClick={() => copyEmbed(selected.widget_token)}>
+                              {copied === selected.widget_token ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
+                              Embed code
+                            </Button>
+                          </>
+                        )}
+                        <Button variant="ghost" onClick={() => remove(selected)} className="text-destructive hover:text-destructive">
+                          <Trash2 className="mr-2 h-4 w-4" /> Delete
+                        </Button>
                       </div>
                     )}
-                  </section>
+                  </CardContent>
+                </Card>
 
-                  <section className="space-y-4 border-t border-border pt-6">
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      Channels
-                    </h3>
-                    <div className="space-y-3 rounded-lg border p-4">
+                {/* Embed section */}
+                {selected.website_enabled && selected.widget_token && (
+                  <Card>
+                    <CardContent className="space-y-3 p-6">
                       <div className="flex items-center justify-between">
                         <div>
-                          <p className="text-sm font-medium">Website widget</p>
-                          <p className="text-xs text-muted-foreground">
-                            Embed a chat bubble on your website — conversations appear in the inbox.
+                          <h3 className="font-semibold">Add to your website</h3>
+                          <p className="text-sm text-muted-foreground">
+                            Paste this snippet before <code className="rounded bg-muted px-1">&lt;/body&gt;</code> on every page.
                           </p>
                         </div>
-                        <Switch
-                          checked={draft.website_enabled}
-                          onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
-                        />
+                        <Button variant="outline" size="sm" onClick={() => copyEmbed(selected.widget_token)}>
+                          {copied === selected.widget_token ? <Check className="mr-2 h-3 w-3" /> : <Copy className="mr-2 h-3 w-3" />}
+                          Copy
+                        </Button>
                       </div>
-                      {draft.website_enabled && (
-                        <div className="grid gap-4 pt-1 sm:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label htmlFor="ag-wtitle">Widget title</Label>
-                            <Input
-                              id="ag-wtitle"
-                              value={draft.widget_title}
-                              onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <Label htmlFor="ag-wcolor">Accent color</Label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                className="h-9 w-12 cursor-pointer rounded-md border"
-                                value={draft.widget_primary_color}
-                                onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
-                              />
-                              <Input
-                                id="ag-wcolor"
-                                value={draft.widget_primary_color}
-                                onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
-                              />
+                      <pre className="overflow-x-auto rounded-lg border bg-muted/50 p-3 text-xs leading-relaxed">
+                        {embedCode(selected.widget_token)}
+                      </pre>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Tools summary */}
+                <Card>
+                  <CardContent className="p-6">
+                    <h3 className="mb-3 font-semibold">Tools enabled</h3>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {TOOL_OPTIONS.map((tool) => {
+                        const on = selected.tools.includes(tool.id);
+                        return (
+                          <div key={tool.id} className={`flex items-start gap-3 rounded-xl border p-4 ${on ? '' : 'opacity-45'}`}>
+                            <tool.icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                            <div>
+                              <p className="text-sm font-medium">{tool.label}</p>
+                              <p className="text-xs text-muted-foreground">{tool.desc}</p>
                             </div>
+                            <span className="ml-auto text-xs font-medium">{on ? 'On' : 'Off'}</span>
                           </div>
-                          <div className="space-y-2 sm:col-span-2">
-                            <Label htmlFor="ag-welcome">Welcome message</Label>
-                            <Input
-                              id="ag-welcome"
-                              value={draft.widget_welcome_message}
-                              onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
-                            />
-                          </div>
-                        </div>
-                      )}
+                        );
+                      })}
                     </div>
+                  </CardContent>
+                </Card>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="ag-akey">
-                        Agent API key (optional — falls back to account AI key)
-                      </Label>
-                      <Input
-                        id="ag-akey"
-                        type="password"
-                        placeholder={keyPlaceholder ? '•••••••• (key saved — leave blank to keep)' : 'sk-… / anthropic key'}
-                        value={apiKeyInput}
-                        onChange={(e) => setApiKeyInput(e.target.value)}
-                      />
-                    </div>
+                {/* System prompt read-only */}
+                <Card>
+                  <CardContent className="space-y-2 p-6">
+                    <h3 className="font-semibold">System prompt</h3>
+                    <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-muted/40 p-4 text-xs leading-relaxed text-muted-foreground">
+                      {selected.system_prompt}
+                    </pre>
+                  </CardContent>
+                </Card>
+              </>
+            )}
 
-                    {draft.website_enabled && draft.widget_token && (
-                      <div className="space-y-3 rounded-lg border bg-muted/40 p-3">
-                        <Label>Embed on your website</Label>
-                        <code className="block overflow-x-auto rounded bg-muted px-3 py-2 text-xs">
-                          {embedUrl(draft.widget_token)}
-                        </code>
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={() => copyEmbed(draft.widget_token)}>
-                            <ExternalLink className="mr-1 h-3 w-3" /> Copy embed code
-                          </Button>
-                          <a
-                            href={`/widget/preview?token=${draft.widget_token}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex h-8 items-center rounded-md border border-border px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-                          >
-                            Open preview ↗
-                          </a>
+            {/* Other agents */}
+            {agents.length > 1 && !draft && (
+              <div>
+                <h3 className="mb-3 text-sm font-semibold text-muted-foreground">
+                  All agents ({agents.length})
+                </h3>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {agents
+                    .filter((a) => a.id !== selectedId)
+                    .map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => setSelectedId(a.id)}
+                        className="flex items-center gap-3 rounded-xl border p-4 text-left transition-colors hover:bg-muted/50"
+                      >
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+                          <Bot className="h-5 w-5 text-primary" />
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          Paste the snippet into your site&apos;s <code>&lt;body&gt;</code>.
-                        </p>
-                      </div>
-                    )}
-                  </section>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{a.name}</p>
+                          <p className="truncate text-xs text-muted-foreground">{a.model_provider} · {a.model}</p>
+                        </div>
+                        {a.is_active ? (
+                          <span className="h-2 w-2 rounded-full bg-emerald-500" title="Active" />
+                        ) : (
+                          <span className="h-2 w-2 rounded-full bg-muted-foreground/40" title="Paused" />
+                        )}
+                      </button>
+                    ))}
                 </div>
               </div>
             )}
-
-            {error && <p className="mt-4 text-sm text-red-500">{error}</p>}
           </div>
 
-          <DialogFooter className="border-t border-border px-6 py-4">
-            <Button variant="outline" onClick={close}>
-              Cancel
-            </Button>
+          {/* RIGHT: live chat preview */}
+          {selected && !draft && (
+            <div className="space-y-3 xl:sticky xl:top-6 xl:self-start">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-muted-foreground">Live preview</h3>
+                <span className="text-xs text-muted-foreground">Test replies in real time</span>
+              </div>
+              <ChatPreview agent={selected} />
+              {!hasKey && (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                  This agent has no API key yet — open <strong>Edit agent</strong> and paste your
+                  Gemini / OpenAI key to see real replies.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---------------- Edit dialog ---------------- */}
+      <Dialog open={!!draft} onOpenChange={(o) => !o && close()}>
+        <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bot className="h-5 w-5 text-primary" />
+              {editingId ? `Edit — ${draft?.name}` : 'Create a new agent'}
+            </DialogTitle>
+          </DialogHeader>
+
+          {draft && (
+            <div className="grid gap-6 md:grid-cols-2">
+              {/* Column 1 — identity + behavior */}
+              <div className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="ag-name">Name *</Label>
+                  <Input
+                    id="ag-name"
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                    placeholder="e.g. Support Bot"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ag-desc">Description (internal)</Label>
+                  <Input
+                    id="ag-desc"
+                    value={draft.description ?? ''}
+                    onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                    placeholder="What is this agent for?"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label>Provider &amp; model</Label>
+                    <Select
+                      value={`${draft.model_provider}:${draft.model}`}
+                      onValueChange={(v) => {
+                        const val = v ?? `${draft.model_provider}:${draft.model}`;
+                        const [provider, ...rest] = val.split(':');
+                        setDraft({
+                          ...draft,
+                          model_provider: provider as Agent['model_provider'],
+                          model: rest.join(':'),
+                        });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="gemini:gemini-2.5-flash">Google · Gemini 2.5 Flash</SelectItem>
+                        <SelectItem value="gemini:gemini-2.5-pro">Google · Gemini 2.5 Pro</SelectItem>
+                        <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
+                        <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
+                        <SelectItem value="anthropic:claude-sonnet-4-6">Anthropic · Claude Sonnet 4.6</SelectItem>
+                        <SelectItem value="anthropic:claude-3-5-haiku-latest">Anthropic · Claude Haiku</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ag-temp">Temperature</Label>
+                    <Input
+                      id="ag-temp"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      value={draft.temperature}
+                      onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ag-prompt">System prompt *</Label>
+                  <Textarea
+                    id="ag-prompt"
+                    className="min-h-[180px] font-mono text-xs"
+                    value={draft.system_prompt}
+                    onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="ag-akey">
+                    API key {hasKey && editingId ? '(saved — leave blank to keep)' : '(optional — falls back to account key)'}
+                  </Label>
+                  <Input
+                    id="ag-akey"
+                    type="password"
+                    placeholder="AIza… / sk-… / sk-ant-…"
+                    value={apiKeyInput}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Column 2 — tools + channels */}
+              <div className="space-y-5">
+                <div className="space-y-2">
+                  <Label>Tools</Label>
+                  {TOOL_OPTIONS.map((tool) => (
+                    <label
+                      key={tool.id}
+                      className="flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors hover:bg-muted/50"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={draft.tools.includes(tool.id)}
+                        onChange={() => toggleTool(tool.id)}
+                      />
+                      <tool.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                      <div>
+                        <p className="text-sm font-medium">{tool.label}</p>
+                        <p className="text-xs text-muted-foreground">{tool.desc}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                <div className="space-y-4 rounded-xl border p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="flex items-center gap-2 text-sm font-medium">
+                        <Globe className="h-4 w-4 text-primary" /> Website widget
+                      </p>
+                      <p className="text-xs text-muted-foreground">Chat bubble on your site → inbox.</p>
+                    </div>
+                    <Switch
+                      checked={draft.website_enabled}
+                      onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
+                    />
+                  </div>
+                  {draft.website_enabled && (
+                    <div className="space-y-3 border-t pt-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="ag-wtitle">Widget title</Label>
+                        <Input
+                          id="ag-wtitle"
+                          value={draft.widget_title}
+                          onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="ag-welcome">Welcome message</Label>
+                        <Textarea
+                          id="ag-welcome"
+                          rows={2}
+                          value={draft.widget_welcome_message}
+                          onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>Accent color</Label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              className="h-9 w-12 cursor-pointer rounded-md border"
+                              value={draft.widget_primary_color}
+                              onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                            />
+                            <Input
+                              value={draft.widget_primary_color}
+                              onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Position</Label>
+                          <Select
+                            value={draft.widget_position}
+                            onValueChange={(v) => setDraft({ ...draft, widget_position: (v ?? 'right') as 'left' | 'right' })}
+                          >
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="right">Bottom right</SelectItem>
+                              <SelectItem value="left">Bottom left</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between rounded-xl border p-4">
+                  <div>
+                    <p className="text-sm font-medium">WhatsApp auto-reply</p>
+                    <p className="text-xs text-muted-foreground">Agent answers bound numbers automatically.</p>
+                  </div>
+                  <Switch
+                    checked={draft.auto_reply_enabled}
+                    onCheckedChange={(v) => setDraft({ ...draft, auto_reply_enabled: v })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-xl border p-4">
+                  <div>
+                    <p className="text-sm font-medium">Agent active</p>
+                    <p className="text-xs text-muted-foreground">Paused agents stop replying everywhere.</p>
+                  </div>
+                  <Switch
+                    checked={draft.is_active}
+                    onCheckedChange={(v) => setDraft({ ...draft, is_active: v })}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={close}>Cancel</Button>
             <Button onClick={save} disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {editingId ? 'Save changes' : 'Create agent'}
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Custom tool editor */}
-      <Dialog open={!!editingCustomTool} onOpenChange={(o) => !o && setEditingCustomTool(null)}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{editingCustomTool && editingCustomTool.name ? 'Edit tool' : 'New custom tool'}</DialogTitle>
-          </DialogHeader>
-          {editingCustomTool && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="ct-name">Tool name *</Label>
-                <Input
-                  id="ct-name"
-                  value={editingCustomTool.name}
-                  onChange={(e) =>
-                    setEditingCustomTool({ ...editingCustomTool, name: e.target.value })
-                  }
-                  placeholder="e.g. check_order_status"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="ct-desc">Description</Label>
-                <Textarea
-                  id="ct-desc"
-                  className="min-h-[80px] text-xs"
-                  value={editingCustomTool.description}
-                  onChange={(e) =>
-                    setEditingCustomTool({ ...editingCustomTool, description: e.target.value })
-                  }
-                  placeholder="What does this tool do? When should the agent use it?"
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>Parameters</Label>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setEditingCustomTool({
-                        ...editingCustomTool,
-                        parameters: [
-                          ...editingCustomTool.parameters,
-                          { name: '', type: 'string', description: '', required: true },
-                        ],
-                      })
-                    }
-                  >
-                    <Plus className="mr-1 h-3.5 w-3.5" />
-                    Add parameter
-                  </Button>
-                </div>
-                {editingCustomTool.parameters.length === 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    No parameters yet. Add the fields the agent must fill to use this tool.
-                  </p>
-                )}
-                <div className="space-y-2">
-                  {editingCustomTool.parameters.map((param, idx) => (
-                    <div key={idx} className="grid grid-cols-12 gap-2 rounded-lg border p-2">
-                      <div className="col-span-4 space-y-1">
-                        <Label className="text-[11px]">Name</Label>
-                        <Input
-                          className="h-7 text-xs"
-                          value={param.name}
-                          onChange={(e) => {
-                            const next = [...editingCustomTool.parameters];
-                            next[idx] = { ...param, name: e.target.value };
-                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
-                          }}
-                          placeholder="e.g. order_id"
-                        />
-                      </div>
-                      <div className="col-span-3 space-y-1">
-                        <Label className="text-[11px]">Type</Label>
-                        <Select
-                          value={param.type}
-                          onValueChange={(v) => {
-                            const next = [...editingCustomTool.parameters];
-                            next[idx] = {
-                              ...param,
-                              type: v as CustomToolParameter['type'],
-                            };
-                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
-                          }}
-                        >
-                          <SelectTrigger className="h-7 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="string">Text</SelectItem>
-                            <SelectItem value="number">Number</SelectItem>
-                            <SelectItem value="boolean">True / False</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="col-span-3 space-y-1">
-                        <Label className="text-[11px]">Description</Label>
-                        <Input
-                          className="h-7 text-xs"
-                          value={param.description}
-                          onChange={(e) => {
-                            const next = [...editingCustomTool.parameters];
-                            next[idx] = { ...param, description: e.target.value };
-                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
-                          }}
-                          placeholder="What is this field?"
-                        />
-                      </div>
-                      <div className="col-span-2 flex flex-col items-end justify-between pt-4">
-                        <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                          <input
-                            type="checkbox"
-                            className="h-3 w-3"
-                            checked={param.required}
-                            onChange={(e) => {
-                              const next = [...editingCustomTool.parameters];
-                              next[idx] = { ...param, required: e.target.checked };
-                              setEditingCustomTool({ ...editingCustomTool, parameters: next });
-                            }}
-                          />
-                          Required
-                        </label>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-[11px] text-red-500"
-                          onClick={() => {
-                            const next = editingCustomTool.parameters.filter((_, i) => i !== idx);
-                            setEditingCustomTool({ ...editingCustomTool, parameters: next });
-                          }}
-                        >
-                          Remove
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setEditingCustomTool(null)}>
-                  Cancel
-                </Button>
-                <Button onClick={saveCustomTool} disabled={!editingCustomTool.name.trim()}>
-                  Save tool
-                </Button>
-              </DialogFooter>
-            </div>
-          )}
         </DialogContent>
       </Dialog>
     </div>
