@@ -9,7 +9,7 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X, Globe, Mail, MessageSquare } from 'lucide-react'
+import { Search, ChevronDown, X, Globe, Mail, MessageSquare } from "lucide-react"
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";

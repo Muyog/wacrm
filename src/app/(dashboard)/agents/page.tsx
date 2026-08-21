@@ -27,6 +27,9 @@ import {
   HandMetal,
   Sparkles,
   Wrench,
+  MessageSquare,
+  Hash,
+  ArrowDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -76,6 +79,19 @@ interface Agent {
   widget_primary_color: string;
   widget_position: 'left' | 'right';
   is_active: boolean;
+  pre_chat_config: PreChatConfig;
+}
+
+interface PreChatCollectInfo { name?: boolean; email?: boolean; phone?: boolean; company?: boolean }
+interface PreChatOption { label: string; next: string }
+interface PreChatNode { id?: string; message: string; options?: PreChatOption[] }
+interface PreChatDialogTree { nodes: Record<string, PreChatNode>; start_node: string }
+interface PreChatConfig {
+  enabled: boolean;
+  collect_info?: PreChatCollectInfo;
+  dialog_tree?: PreChatDialogTree;
+  ai_fallback?: boolean;
+  start_with_ai?: boolean;
 }
 
 const TOOL_OPTIONS = [
@@ -103,6 +119,13 @@ function emptyAgent(): Omit<Agent, 'id'> {
     widget_primary_color: '#7c3aed',
     widget_position: 'right',
     is_active: true,
+    pre_chat_config: {
+      enabled: false,
+      collect_info: { name: true, email: false, phone: false, company: false },
+      dialog_tree: { nodes: {}, start_node: '' },
+      ai_fallback: true,
+      start_with_ai: false,
+    },
   };
 }
 
@@ -298,6 +321,7 @@ export default function AgentsBuilderPage() {
       widget_primary_color: agent.widget_primary_color,
       widget_position: agent.widget_position,
       is_active: agent.is_active,
+      pre_chat_config: agent.pre_chat_config || {},
     });
     setApiKeyInput('');
     setError(null);
@@ -816,6 +840,12 @@ export default function AgentsBuilderPage() {
                   )}
                 </div>
 
+                {/* Pre-chat flow */}
+                <PreChatEditor
+                  config={draft.pre_chat_config}
+                  onChange={(pc) => setDraft({ ...draft, pre_chat_config: pc })}
+                />
+
                 <div className="flex items-center justify-between rounded-xl border p-4">
                   <div>
                     <p className="text-sm font-medium">WhatsApp auto-reply</p>
@@ -852,6 +882,191 @@ export default function AgentsBuilderPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Pre-chat flow editor                                                */
+/* ------------------------------------------------------------------ */
+
+function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: (c: PreChatConfig) => void }) {
+  const set = (patch: Partial<PreChatConfig>) => onChange({ ...config, ...patch });
+  const tree = config.dialog_tree || { nodes: {}, start_node: '' };
+
+  const addNode = () => {
+    const id = 'node_' + Object.keys(tree.nodes).length + '_' + Date.now().toString(36).slice(-3);
+    const nodes = { ...tree.nodes, [id]: { id, message: 'What would you like to do?', options: [{ label: 'Option 1', next: '__ai__' }] } };
+    set({ dialog_tree: { nodes, start_node: tree.start_node || id } });
+  };
+  const updateNode = (id: string, patch: Partial<PreChatNode>) => {
+    set({ dialog_tree: { ...tree, nodes: { ...tree.nodes, [id]: { ...tree.nodes[id], ...patch } } } });
+  };
+  const removeNode = (id: string) => {
+    const nodes = { ...tree.nodes };
+    delete nodes[id];
+    // clear references to deleted node
+    for (const k of Object.keys(nodes)) {
+      const n = nodes[k];
+      if (n.options) nodes[k] = { ...n, options: n.options.map((o) => o.next === id ? { ...o, next: '__ai__' } : o) };
+    }
+    set({ dialog_tree: { nodes, start_node: tree.start_node === id ? Object.keys(nodes)[0] || '' : tree.start_node } });
+  };
+  const addOption = (nodeId: string) => {
+    const n = tree.nodes[nodeId];
+    if (!n) return;
+    updateNode(nodeId, { options: [...(n.options || []), { label: 'New option', next: '__ai__' }] });
+  };
+  const updateOption = (nodeId: string, idx: number, patch: Partial<PreChatOption>) => {
+    const n = tree.nodes[nodeId];
+    if (!n || !n.options) return;
+    const opts = n.options.map((o, i) => (i === idx ? { ...o, ...patch } : o));
+    updateNode(nodeId, { options: opts });
+  };
+  const removeOption = (nodeId: string, idx: number) => {
+    const n = tree.nodes[nodeId];
+    if (!n || !n.options) return;
+    updateNode(nodeId, { options: n.options.filter((_, i) => i !== idx) });
+  };
+
+  return (
+    <div className="space-y-4 rounded-xl border p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <MessageSquare className="h-4 w-4 text-primary" /> Pre-chat flow
+          </p>
+          <p className="text-xs text-muted-foreground">Collect info + guide visitors before AI chat.</p>
+        </div>
+        <Switch checked={config.enabled} onCheckedChange={(v) => set({ enabled: v })} />
+      </div>
+
+      {config.enabled && (
+        <div className="space-y-4 border-t pt-3">
+          {/* Collect info */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Collect info before chat</p>
+            <div className="grid grid-cols-2 gap-2">
+              {(['name', 'email', 'phone', 'company'] as const).map((field) => (
+                <label key={field} className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={!!config.collect_info?.[field]}
+                    onChange={(e) => set({ collect_info: { ...(config.collect_info || {}), [field]: e.target.checked } })}
+                    className="rounded"
+                  />
+                  <span className="capitalize">{field}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Behavior */}
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={!!config.ai_fallback}
+                onChange={(e) => set({ ai_fallback: e.target.checked })}
+                className="rounded"
+              />
+              <span>Free AI chat after flow</span>
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={!!config.start_with_ai}
+                onChange={(e) => set({ start_with_ai: e.target.checked })}
+                className="rounded"
+              />
+              <span>Skip flow, start with AI</span>
+            </label>
+          </div>
+
+          {/* Dialog tree */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <Hash className="mr-1 inline h-3 w-3" />Dialog tree
+              </p>
+              <button onClick={addNode} className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+                <Plus className="h-3 w-3" /> Add node
+              </button>
+            </div>
+
+            {Object.keys(tree.nodes).length === 0 && (
+              <p className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">
+                No nodes yet. Add a node to build a guided menu (e.g. "Loans → Personal/Business → AI").
+              </p>
+            )}
+
+            <div className="space-y-3">
+              {Object.entries(tree.nodes).map(([id, node]) => (
+                <div key={id} className="rounded-lg border bg-muted/30 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {tree.start_node === id && (
+                        <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">START</span>
+                      )}
+                      <span className="text-xs font-mono text-muted-foreground">{id}</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {tree.start_node !== id && (
+                        <button
+                          onClick={() => set({ dialog_tree: { ...tree, start_node: id } })}
+                          className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10"
+                          title="Set as start node"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+                      )}
+                      <button onClick={() => removeNode(id)} className="rounded px-1 py-0.5 text-muted-foreground hover:text-red-500">
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <input
+                    className="mb-2 w-full rounded border bg-background px-2 py-1.5 text-xs"
+                    value={node.message}
+                    placeholder="Bot message shown at this step..."
+                    onChange={(e) => updateNode(id, { message: e.target.value })}
+                  />
+
+                  <div className="space-y-1.5">
+                    {(node.options || []).map((opt, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5">
+                        <input
+                          className="flex-1 rounded border bg-background px-2 py-1 text-[11px]"
+                          value={opt.label}
+                          placeholder="Button label..."
+                          onChange={(e) => updateOption(id, idx, { label: e.target.value })}
+                        />
+                        <select
+                          className="rounded border bg-background px-1 py-1 text-[11px]"
+                          value={opt.next}
+                          onChange={(e) => updateOption(id, idx, { next: e.target.value })}
+                        >
+                          <option value="__ai__">→ AI chat</option>
+                          {Object.keys(tree.nodes).map((nid) => (
+                            <option key={nid} value={nid}>→ {nid}</option>
+                          ))}
+                        </select>
+                        <button onClick={() => removeOption(id, idx)} className="text-muted-foreground hover:text-red-500">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => addOption(id)} className="mt-2 inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+                    <Plus className="h-3 w-3" /> Add option
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -4,8 +4,6 @@ import { loadAgentByWidgetToken, generateAgentReply } from '@/lib/ai/agent'
 import { resolveConversationForWidget, insertMessage } from '@/lib/agents/widget'
 import { extractAndTagTopics } from '@/lib/agents/topics'
 
-// Lazy admin client (service role) — public widget endpoints must not
-// depend on a user session.
 let _admin: any = null
 function admin() {
   if (!_admin) {
@@ -38,6 +36,7 @@ export async function GET(
         widget_welcome_message: agent.widget_welcome_message,
         widget_primary_color: agent.widget_primary_color,
         widget_position: agent.widget_position,
+        pre_chat: agent.pre_chat_config || {},
       },
     })
   } catch (err) {
@@ -50,8 +49,8 @@ export async function GET(
  * POST /api/widget/[token] — public chat message. Resolves the
  * visitor conversation, stores the message, runs the agent (when
  * active + configured), stores the reply, returns it.
- * The visitor payload uses a stable client-generated id so returning
- * visitors continue the same thread in the inbox.
+ * Accepts optional `customer_info` (collected pre-chat form) and
+ * `flow_path` (dialog-tree selections) to persist on the thread.
  */
 export async function POST(
   req: Request,
@@ -71,14 +70,36 @@ export async function POST(
       return NextResponse.json({ error: 'agent inactive' }, { status: 409 })
     }
 
+    // Merge pre-chat customer info into the contact name if provided
+    const customerInfo = body.customer_info || null
+    const resolvedName = customerInfo?.name || String(body.name ?? '').trim() || null
+
     const ctx = await resolveConversationForWidget(
       admin(),
       agent,
       String(body.visitor ?? '').trim(),
-      String(body.name ?? '').trim() || null,
+      resolvedName,
     )
     if (!ctx) {
       return NextResponse.json({ error: 'could not open conversation' }, { status: 500 })
+    }
+
+    // Persist pre-chat flow path + customer info on the conversation
+    if (customerInfo || body.flow_path) {
+      const meta: Record<string, unknown> = {}
+      if (customerInfo) meta.customer_info = customerInfo
+      if (body.flow_path) meta.flow_path = body.flow_path
+      await admin().from('conversations').update({ pre_chat_data: meta }).eq('id', ctx.conversationId)
+      // Also update contact fields if we have them
+      if (customerInfo) {
+        const contactPatch: Record<string, string> = {}
+        if (customerInfo.name) contactPatch.name = customerInfo.name
+        if (customerInfo.email) contactPatch.email = customerInfo.email
+        if (customerInfo.phone) contactPatch.phone = customerInfo.phone
+        if (Object.keys(contactPatch).length) {
+          await admin().from('contacts').update(contactPatch).eq('id', ctx.contactId)
+        }
+      }
     }
 
     await insertMessage(admin(), ctx.conversationId, 'customer', text)

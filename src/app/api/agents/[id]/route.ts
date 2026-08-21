@@ -69,6 +69,7 @@ export async function PATCH(
       'widget_primary_color',
       'widget_position',
       'is_active',
+      'pre_chat_config',
     ]
     const patch: Record<string, unknown> = {}
     for (const key of allowed) {

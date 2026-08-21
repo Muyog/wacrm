@@ -1,0 +1,34 @@
+-- ============================================================
+-- 043_pre_chat_flows.sql
+-- Pre-chat collection + dialog-tree flows for the website widget.
+-- Stores the entire flow config as JSONB on the agent row so each
+-- agent can have its own flow. Idempotent.
+-- ============================================================
+
+-- Pre-chat configuration: form fields + dialog tree + behavior flags.
+-- Schema (JSONB):
+-- {
+--   "enabled": true,
+--   "collect_info": { "name": true, "email": true, "phone": false, "company": false },
+--   "dialog_tree": {
+--     "nodes": {
+--       "start": {
+--         "id": "start",
+--         "message": "Hi! What can we help with?",
+--         "options": [
+--           { "label": "Loans",    "next": "loans" },
+--           { "label": "Accounts", "next": "accounts" },
+--           { "label": "Talk to AI","next": "__ai__" }
+--         ]
+--       },
+--       "loans": { "message": "What kind of loan?", "options": [
+--         { "label": "Personal", "next": "__ai__" },
+--         { "label": "Business", "next": "__ai__" }
+--       ]}
+--     },
+--     "start_node": "start"
+--   },
+--   "ai_fallback": true,
+--   "start_with_ai": false
+-- }
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS pre_chat_config JSONB DEFAULT '{}'::jsonb;

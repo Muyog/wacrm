@@ -34,10 +34,11 @@ export interface AgentRow {
   widget_primary_color: string
   widget_position: 'left' | 'right'
   is_active: boolean
+  pre_chat_config: Record<string, unknown>
 }
 
 export const AGENT_COLUMNS =
-  'id, account_id, name, description, avatar_url, system_prompt, model_provider, model, temperature, max_tokens, tools, auto_reply_enabled, website_enabled, widget_token, widget_title, widget_welcome_message, widget_primary_color, widget_position, is_active'
+  'id, account_id, name, description, avatar_url, system_prompt, model_provider, model, temperature, max_tokens, tools, auto_reply_enabled, website_enabled, widget_token, widget_title, widget_welcome_message, widget_primary_color, widget_position, is_active, pre_chat_config'
 
 export async function loadAgent(
   db: SupabaseClient,

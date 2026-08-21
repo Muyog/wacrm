@@ -71,6 +71,7 @@ export async function POST(req: Request) {
         widget_primary_color: body.widget_primary_color || '#7c3aed',
         widget_position: body.widget_position === 'left' ? 'left' : 'right',
         is_active: body.is_active !== false,
+        pre_chat_config: body.pre_chat_config || {},
       })
       .select()
       .single()
