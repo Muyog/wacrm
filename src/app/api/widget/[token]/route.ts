@@ -15,6 +15,28 @@ function admin() {
   return _admin
 }
 
+/**
+ * CORS: this is a PUBLIC embeddable widget endpoint — it is called by
+ * third-party sites (customer marketing pages), so browsers require
+ * permissive CORS headers or every fetch is blocked cross-origin.
+ */
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Max-Age': '86400',
+}
+
+function withCors(res: NextResponse) {
+  for (const [k, v] of Object.entries(CORS)) res.headers.set(k, v)
+  return res
+}
+
+/** Preflight for cross-origin POSTs from embedding sites. */
+export async function OPTIONS() {
+  return withCors(new NextResponse(null, { status: 204 }))
+}
+
 /** Public GET — widget boot config (no auth). */
 export async function GET(
   req: Request,
@@ -22,13 +44,13 @@ export async function GET(
 ) {
   try {
     const { token } = await params
-    if (!token) return NextResponse.json({ error: 'missing token' }, { status: 400 })
+    if (!token) return withCors(NextResponse.json({ error: 'missing token' }, { status: 400 }))
 
     const agent = await loadAgentByWidgetToken(admin(), token)
     if (!agent || !agent.website_enabled) {
-      return NextResponse.json({ error: 'widget not found' }, { status: 404 })
+      return withCors(NextResponse.json({ error: 'widget not found' }, { status: 404 }))
     }
-    return NextResponse.json({
+    return withCors(NextResponse.json({
       agent: {
         name: agent.name,
         avatar_url: agent.avatar_url,
@@ -38,10 +60,10 @@ export async function GET(
         widget_position: agent.widget_position,
         pre_chat: agent.pre_chat_config || {},
       },
-    })
+    }))
   } catch (err) {
     console.error('[widget GET]', err)
-    return NextResponse.json({ error: 'internal error' }, { status: 500 })
+    return withCors(NextResponse.json({ error: 'internal error' }, { status: 500 }))
   }
 }
 
@@ -60,14 +82,14 @@ export async function POST(
     const { token } = await params
     const body = await req.json().catch(() => ({}))
     const text = String(body.message ?? '').trim()
-    if (!text) return NextResponse.json({ error: 'message required' }, { status: 400 })
+    if (!text) return withCors(NextResponse.json({ error: 'message required' }, { status: 400 }))
 
     const agent = await loadAgentByWidgetToken(admin(), token)
     if (!agent || !agent.website_enabled) {
-      return NextResponse.json({ error: 'widget not found' }, { status: 404 })
+      return withCors(NextResponse.json({ error: 'widget not found' }, { status: 404 }))
     }
     if (!agent.is_active) {
-      return NextResponse.json({ error: 'agent inactive' }, { status: 409 })
+      return withCors(NextResponse.json({ error: 'agent inactive' }, { status: 409 }))
     }
 
     // Merge pre-chat customer info into the contact name if provided
@@ -81,7 +103,7 @@ export async function POST(
       resolvedName,
     )
     if (!ctx) {
-      return NextResponse.json({ error: 'could not open conversation' }, { status: 500 })
+      return withCors(NextResponse.json({ error: 'could not open conversation' }, { status: 500 }))
     }
 
     // Persist pre-chat flow path + customer info on the conversation
@@ -129,9 +151,9 @@ export async function POST(
       await insertMessage(admin(), ctx.conversationId, 'bot', reply)
     }
 
-    return NextResponse.json({ reply, conversation_id: ctx.conversationId })
+    return withCors(NextResponse.json({ reply, conversation_id: ctx.conversationId }))
   } catch (err) {
     console.error('[widget]', err)
-    return NextResponse.json({ error: 'internal error' }, { status: 500 })
+    return withCors(NextResponse.json({ error: 'internal error' }, { status: 500 }))
   }
 }
