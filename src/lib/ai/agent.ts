@@ -160,7 +160,7 @@ export async function generateAgentReply(
 
   const tools = Array.isArray(agent.tools) ? agent.tools : []
   let kb = ''
-  if (tools.includes('knowledge_base')) {
+  if (tools.some((t) => t === 'knowledge_base')) {
     try {
       const queryText = latestUserMessage(messages)
       const accountId = opts.accountId ?? agent.account_id
@@ -181,9 +181,20 @@ export async function generateAgentReply(
     }
   }
 
+  // Custom tools (created in the agent editor) are described to the
+  // model inline — the model can then reference/claim these
+  // capabilities in conversation even before native function-calling
+  // is wired for them.
+  const customToolLines = tools
+    .filter((t) => typeof t === 'object' && t !== null && (t as { type?: string }).type === 'custom')
+    .map((t) => `- ${(t as { name: string; description: string }).name}: ${(t as { name: string; description: string }).description}`)
+
   const systemPrompt = [
     agent.system_prompt || config.systemPrompt || 'You are a helpful assistant.',
     kb ? `\n\nKnowledge base context:\n${kb}` : '',
+    customToolLines.length > 0
+      ? `\n\nAdditional capabilities you can offer the user (describe honestly; if an action requires data you do not have, say what you need):\n${customToolLines.join('\n')}`
+      : '',
     `\n\nCurrent date: ${new Date().toISOString().slice(0, 10)}`,
   ].join('')
 

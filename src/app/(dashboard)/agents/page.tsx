@@ -26,6 +26,7 @@ import {
   BookOpen,
   HandMetal,
   Sparkles,
+  Wrench,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -50,6 +51,12 @@ import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/hooks/use-auth';
 
+interface CustomTool {
+  type: 'custom';
+  name: string;
+  description: string;
+}
+
 interface Agent {
   id: string;
   name: string;
@@ -60,7 +67,7 @@ interface Agent {
   model: string;
   temperature: number;
   max_tokens: number;
-  tools: string[];
+  tools: (string | CustomTool)[];
   auto_reply_enabled: boolean;
   website_enabled: boolean;
   widget_token: string | null;
@@ -222,6 +229,9 @@ export default function AgentsBuilderPage() {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [hasKey, setHasKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [newToolName, setNewToolName] = useState('');
+  const [newToolDesc, setNewToolDesc] = useState('');
+  const [showToolForm, setShowToolForm] = useState(false);
 
   const canEdit = accountRole === 'owner' || accountRole === 'admin';
 
@@ -340,12 +350,26 @@ export default function AgentsBuilderPage() {
 
   const toggleTool = (toolId: string) => {
     if (!draft) return;
+    const has = draft.tools.some((t) => typeof t === 'string' && t === toolId);
     setDraft({
       ...draft,
-      tools: draft.tools.includes(toolId)
-        ? draft.tools.filter((t) => t !== toolId)
+      tools: has
+        ? draft.tools.filter((t) => !(typeof t === 'string' && t === toolId))
         : [...draft.tools, toolId],
     });
+  };
+
+  const addCustomTool = () => {
+    if (!draft) return;
+    const name = newToolName.trim();
+    if (!name) return;
+    setDraft({
+      ...draft,
+      tools: [...draft.tools, { type: 'custom', name, description: newToolDesc.trim() || 'Custom capability.' }],
+    });
+    setNewToolName('');
+    setNewToolDesc('');
+    setShowToolForm(false);
   };
 
   const copyEmbed = async (token: string | null) => {
@@ -411,93 +435,66 @@ export default function AgentsBuilderPage() {
           <div className="min-w-0 space-y-6">
             {!draft && selected && (
               <>
-                {/* Identity strip */}
+                {/* Identity strip — wide, roomy layout */}
                 <Card>
-                  <CardContent className="flex flex-wrap items-center gap-5 p-6">
-                    <div
-                      className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl"
-                      style={{ backgroundColor: (selected.widget_primary_color || '#7c3aed') + '22' }}
-                    >
-                      <Bot className="h-8 w-8" style={{ color: selected.widget_primary_color || '#7c3aed' }} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="truncate text-xl font-bold">{selected.name}</h2>
-                        {selected.is_active ? (
-                          <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" variant="secondary">Active</Badge>
-                        ) : (
-                          <Badge variant="secondary">Paused</Badge>
-                        )}
+                  <CardContent className="p-6 lg:p-8">
+                    <div className="flex flex-col gap-6 lg:flex-row lg:items-center">
+                      <div
+                        className="flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl"
+                        style={{ backgroundColor: (selected.widget_primary_color || '#7c3aed') + '22' }}
+                      >
+                        <Bot className="h-10 w-10" style={{ color: selected.widget_primary_color || '#7c3aed' }} />
                       </div>
-                      <p className="mt-0.5 text-sm text-muted-foreground">
-                        {selected.description || 'No description'}
-                      </p>
-                      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                        <Badge variant="outline" className="gap-1">
-                          <Sparkles className="h-3 w-3" /> {selected.model_provider} · {selected.model}
-                        </Badge>
-                        {selected.website_enabled && selected.widget_token && (
-                          <Badge variant="outline" className="gap-1"><Globe className="h-3 w-3" /> Website</Badge>
-                        )}
-                        <Badge variant="outline" className="gap-1"><MessageCircle className="h-3 w-3" /> WhatsApp</Badge>
-                        {hasKey ? (
-                          <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">API key ✓</Badge>
-                        ) : (
-                          <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">No API key</Badge>
-                        )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <h2 className="break-words text-2xl font-bold tracking-tight">{selected.name}</h2>
+                          {selected.is_active ? (
+                            <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" variant="secondary">Active</Badge>
+                          ) : (
+                            <Badge variant="secondary">Paused</Badge>
+                          )}
+                        </div>
+                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                          {selected.description || 'No description yet — add one in the editor.'}
+                        </p>
+                        <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
+                          <Badge variant="outline" className="gap-1 px-2.5 py-1">
+                            <Sparkles className="h-3 w-3" /> {selected.model_provider} · {selected.model}
+                          </Badge>
+                          <Badge variant="outline" className="gap-1 px-2.5 py-1"><Globe className="h-3 w-3" /> Website</Badge>
+                          <Badge variant="outline" className="gap-1 px-2.5 py-1"><MessageCircle className="h-3 w-3" /> WhatsApp</Badge>
+                          {hasKey ? (
+                            <Badge variant="outline" className="border-emerald-500/40 px-2.5 py-1 text-emerald-600 dark:text-emerald-400">API key ✓</Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-amber-500/40 px-2.5 py-1 text-amber-600 dark:text-amber-400">No API key</Badge>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    {canEdit && (
-                      <div className="flex flex-wrap gap-2">
-                        <Button onClick={() => openEdit(selected)}>
+                    <div className="mt-6 flex flex-wrap items-center gap-3 border-t pt-5">
+                      {canEdit && (
+                        <Button onClick={() => openEdit(selected)} size="lg">
                           <Pencil className="mr-2 h-4 w-4" /> Edit agent
                         </Button>
-                        {selected.website_enabled && selected.widget_token && (
-                          <>
-                            <a
+                      )}
+                      {selected.website_enabled && selected.widget_token && (
+                        <a
                           href={`/widget/preview?token=${selected.widget_token}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border bg-transparent px-4 text-sm font-medium transition-colors hover:bg-muted"
+                          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-border bg-transparent px-5 text-sm font-medium transition-colors hover:bg-muted"
                         >
-                          <ExternalLink className="h-4 w-4" /> Full-page preview
+                          <ExternalLink className="h-4 w-4" /> Web chatbot preview
                         </a>
-                            <Button variant="outline" onClick={() => copyEmbed(selected.widget_token)}>
-                              {copied === selected.widget_token ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-                              Embed code
-                            </Button>
-                          </>
-                        )}
-                        <Button variant="ghost" onClick={() => remove(selected)} className="text-destructive hover:text-destructive">
+                      )}
+                      {canEdit && (
+                        <Button variant="ghost" onClick={() => remove(selected)} className="ml-auto text-destructive hover:text-destructive">
                           <Trash2 className="mr-2 h-4 w-4" /> Delete
                         </Button>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
-
-                {/* Embed section */}
-                {selected.website_enabled && selected.widget_token && (
-                  <Card>
-                    <CardContent className="space-y-3 p-6">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="font-semibold">Add to your website</h3>
-                          <p className="text-sm text-muted-foreground">
-                            Paste this snippet before <code className="rounded bg-muted px-1">&lt;/body&gt;</code> on every page.
-                          </p>
-                        </div>
-                        <Button variant="outline" size="sm" onClick={() => copyEmbed(selected.widget_token)}>
-                          {copied === selected.widget_token ? <Check className="mr-2 h-3 w-3" /> : <Copy className="mr-2 h-3 w-3" />}
-                          Copy
-                        </Button>
-                      </div>
-                      <pre className="overflow-x-auto rounded-lg border bg-muted/50 p-3 text-xs leading-relaxed">
-                        {embedCode(selected.widget_token)}
-                      </pre>
-                    </CardContent>
-                  </Card>
-                )}
 
                 {/* Tools + prompt live in the Edit dialog — keep this
                     page a clean overview. Show a one-line summary only. */}
@@ -506,7 +503,13 @@ export default function AgentsBuilderPage() {
                     <span>
                       <strong className="text-foreground">{selected.tools.length}</strong> tool{selected.tools.length === 1 ? '' : 's'} enabled
                       {selected.tools.length > 0 && (
-                        <span className="ml-1">({selected.tools.map((t) => t === 'knowledge_base' ? 'Knowledge base' : t === 'handoff' ? 'Human handoff' : t).join(', ')})</span>
+                        <span className="ml-1">
+                          ({selected.tools.map((t) =>
+                            typeof t === 'string'
+                              ? (t === 'knowledge_base' ? 'Knowledge base' : t === 'handoff' ? 'Human handoff' : t)
+                              : t.name
+                          ).join(', ')})
+                        </span>
                       )}
                     </span>
                     <span className="hidden sm:inline text-border">|</span>
@@ -678,7 +681,7 @@ export default function AgentsBuilderPage() {
                       <input
                         type="checkbox"
                         className="mt-1"
-                        checked={draft.tools.includes(tool.id)}
+                        checked={draft.tools.some((t) => typeof t === 'string' && t === tool.id)}
                         onChange={() => toggleTool(tool.id)}
                       />
                       <tool.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
@@ -688,6 +691,63 @@ export default function AgentsBuilderPage() {
                       </div>
                     </label>
                   ))}
+
+                  {/* Custom tools */}
+                  {draft.tools.filter((t) => typeof t !== 'string').map((t, i) => {
+                    const tool = t as CustomTool;
+                    return (
+                      <div key={`ct-${i}`} className="flex items-start gap-3 rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3">
+                        <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium">{tool.name}</p>
+                          <p className="text-xs text-muted-foreground">{tool.description}</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => setDraft({ ...draft, tools: draft.tools.filter((_, j) => j !== draft.tools.indexOf(tool)) })}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {!showToolForm ? (
+                    <Button variant="outline" size="sm" className="w-full" onClick={() => setShowToolForm(true)}>
+                      <Plus className="mr-2 h-3.5 w-3.5" /> Create a tool
+                    </Button>
+                  ) : (
+                    <div className="space-y-3 rounded-xl border p-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="tool-name">Tool name</Label>
+                        <Input
+                          id="tool-name"
+                          value={newToolName}
+                          onChange={(e) => setNewToolName(e.target.value)}
+                          placeholder="e.g. Check loan status"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="tool-desc">What it does (shown to the model)</Label>
+                        <Textarea
+                          id="tool-desc"
+                          rows={2}
+                          value={newToolDesc}
+                          onChange={(e) => setNewToolDesc(e.target.value)}
+                          placeholder="Describe when the agent should use this capability…"
+                        />
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => { setShowToolForm(false); setNewToolName(''); setNewToolDesc(''); }}>
+                          Cancel
+                        </Button>
+                        <Button size="sm" onClick={addCustomTool} disabled={!newToolName.trim()}>
+                          Add tool
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-4 rounded-xl border p-4">
