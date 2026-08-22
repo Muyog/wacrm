@@ -221,13 +221,7 @@ export default function DashboardPage() {
       {/* Quick actions */}
       <QuickActions />
 
-      {/* Charts row */}
-      {/* items-stretch (the grid default) stretches the two columns to
-          match the tallest sibling; adding h-full on each wrapper and
-          on the inner panels makes both cards actually fill that
-          stretched height so their rounded borders line up. Without
-          this, the pipeline card rendered at its natural (shorter)
-          height while the line chart drove the row height. */}
+      {/* Charts row — conversations chart + compact donut pair */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
         <div className="h-full lg:col-span-3">
           <ConversationsChart
@@ -238,11 +232,12 @@ export default function DashboardPage() {
           />
         </div>
         <div className="h-full lg:col-span-2">
-          <PipelineDonut
-            data={pipeline}
-            loading={pipelineLoading}
-            currency={defaultCurrency}
-          />
+          {/* Compact pair: channels + messages-by-sender, stacked in the
+              slot next to the line chart (pipeline moved below). */}
+          <div className="grid h-full grid-cols-1 gap-4 sm:grid-cols-2 lg:h-full">
+            <ChannelsDonut data={channels} />
+            <MessagesDonut data={messagesBySender} />
+          </div>
         </div>
       </div>
 
@@ -252,10 +247,9 @@ export default function DashboardPage() {
       {/* Activity feed */}
       <ActivityFeed items={activity} loading={activityLoading} />
 
-      {/* Donuts + topics */}
+      {/* Pipeline (moved here) + topics */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="h-full"><ChannelsDonut data={channels} /></div>
-        <div className="h-full"><MessagesDonut data={messagesBySender} /></div>
+        <div className="h-full lg:col-span-2"><PipelineDonut data={pipeline} loading={pipelineLoading} currency={defaultCurrency} /></div>
         <div className="h-full"><TopicsCloud data={topics} /></div>
       </div>
     </div>

@@ -7,8 +7,8 @@ import type { ChannelsDonutData, MessagesDonutData } from '@/lib/dashboard/types
 /* Shared donut SVG (used by both donuts)                              */
 /* ------------------------------------------------------------------ */
 
-const SIZE = 140;
-const STROKE = 28;
+const SIZE = 104;
+const STROKE = 18;
 const R = (SIZE - STROKE) / 2;
 const C = 2 * Math.PI * R;
 
@@ -85,9 +85,9 @@ export function ChannelsDonut({ data }: { data: ChannelsDonutData | null }) {
         <h2 className="text-sm font-semibold">Conversations by channel</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">Where customers reach you</p>
       </header>
-      <div className="flex flex-1 items-center gap-5 p-5">
+      <div className="flex flex-1 flex-col justify-center gap-3 p-4">
         <Donut slices={slices} />
-        <div className="min-w-0 flex-1 space-y-2">
+        <div className="min-w-0 space-y-1.5">
           {slices.length === 0 && (
             <p className="text-xs text-muted-foreground">No conversations yet</p>
           )}
@@ -95,13 +95,13 @@ export function ChannelsDonut({ data }: { data: ChannelsDonutData | null }) {
             const Icon = CHANNEL_ICONS[s.label.toLowerCase()] || Globe;
             const pct = total ? Math.round((s.count / total) * 100) : 0;
             return (
-              <div key={s.label} className="flex items-center gap-2.5 text-xs">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: s.color + '22' }}>
-                  <Icon className="h-3 w-3" style={{ color: s.color }} />
+              <div key={s.label} className="flex items-center gap-2 text-[11px]">
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded" style={{ backgroundColor: s.color + '22' }}>
+                  <Icon className="h-2.5 w-2.5" style={{ color: s.color }} />
                 </span>
                 <span className="flex-1 truncate">{s.label}</span>
                 <span className="tabular-nums font-medium">{s.count}</span>
-                <span className="w-8 text-right tabular-nums text-muted-foreground">{pct}%</span>
+                <span className="w-7 text-right tabular-nums text-muted-foreground">{pct}%</span>
               </div>
             );
           })}
@@ -134,20 +134,20 @@ export function MessagesDonut({ data }: { data: MessagesDonutData | null }) {
         <h2 className="text-sm font-semibold">Messages by sender</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">Who is doing the talking</p>
       </header>
-      <div className="flex flex-1 items-center gap-5 p-5">
+      <div className="flex flex-1 flex-col justify-center gap-3 p-4">
         <Donut slices={slices} />
-        <div className="min-w-0 flex-1 space-y-2">
+        <div className="min-w-0 space-y-1.5">
           {slices.length === 0 && (
             <p className="text-xs text-muted-foreground">No messages yet</p>
           )}
           {slices.map((s) => {
             const pct = total ? Math.round((s.count / total) * 100) : 0;
             return (
-              <div key={s.label} className="flex items-center gap-2.5 text-xs">
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: s.color }} />
+              <div key={s.label} className="flex items-center gap-2 text-[11px]">
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: s.color }} />
                 <span className="flex-1 truncate">{s.label}</span>
                 <span className="tabular-nums font-medium">{s.count}</span>
-                <span className="w-8 text-right tabular-nums text-muted-foreground">{pct}%</span>
+                <span className="w-7 text-right tabular-nums text-muted-foreground">{pct}%</span>
               </div>
             );
           })}

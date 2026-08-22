@@ -130,45 +130,135 @@ function emptyAgent(): Omit<Agent, 'id'> {
 }
 
 /* ------------------------------------------------------------------ */
-/* Live chat preview — talks through the public widget API             */
+/* Live chat preview — talks through the public widget API, and runs   */
+/* the SAME pre-chat flow as the embeddable widget: info form →        */
+/* dialog tree (quick replies) → free AI chat.                         */
 /* ------------------------------------------------------------------ */
 
+type FlowStep =
+  | { kind: 'msg'; role: 'bot' | 'user'; text: string }
+  | { kind: 'form'; fields: Required<Pick<PreChatCollectInfo, 'name' | 'email' | 'phone' | 'company'>> extends never ? string[] : string[] }
+  | { kind: 'quick'; node: PreChatNode };
+
 function ChatPreview({ agent }: { agent: Agent }) {
-  const [messages, setMessages] = useState<{ role: 'bot' | 'user'; text: string }[]>([]);
+  const [steps, setSteps] = useState<FlowStep[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const visitorRef = useRef<string>('');
+  const infoRef = useRef<Record<string, string>>({});
+  const pathRef = useRef<{ node: string; label: string }[]>([]);
+  const readyRef = useRef(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [chatReady, setChatReady] = useState(false);
 
-  // Reset the thread when switching agents.
+  const pc = agent.pre_chat_config || {};
+  const pcEnabled = !!pc.enabled && !pc.start_with_ai;
+
+  // Reset the thread when switching agents or changing config.
   useEffect(() => {
-    setMessages([{ role: 'bot', text: agent.widget_welcome_message || 'Hi! How can we help you today?' }]);
     visitorRef.current = 'preview-' + agent.id.slice(0, 8) + '-' + Math.random().toString(36).slice(2, 8);
-  }, [agent.id, agent.widget_welcome_message]);
+    infoRef.current = {};
+    pathRef.current = [];
+    readyRef.current = false;
+    setChatReady(false);
+    const initial: FlowStep[] = [{ kind: 'msg', role: 'bot', text: agent.widget_welcome_message || 'Hi! How can we help you today?' }];
+    if (!pcEnabled) {
+      readyRef.current = true;
+      setChatReady(true);
+    } else {
+      const collect = pc.collect_info || {};
+      const hasForm = collect.name || collect.email || collect.phone || collect.company;
+      if (hasForm) {
+        initial.push({
+          kind: 'form',
+          fields: (['name', 'email', 'phone', 'company'] as const).filter((f) => collect[f]),
+        });
+      } else {
+        startTree(initial);
+      }
+    }
+    setSteps(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id]);
 
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [messages, busy]);
+  }, [steps, busy]);
 
+  function startTree(list: FlowStep[]) {
+    const tree = pc.dialog_tree;
+    if (tree && tree.nodes && tree.start_node && tree.nodes[tree.start_node]) {
+      list.push({ kind: 'quick', node: tree.nodes[tree.start_node] });
+    } else {
+      unlock();
+    }
+  }
+
+  function unlock() {
+    readyRef.current = true;
+    setChatReady(true);
+  }
+
+  /* --- form submit --- */
+  const handleFormSubmit = (values: Record<string, string>, fields: string[]) => {
+    infoRef.current = values;
+    const summary = fields.map((f) => `${f.charAt(0).toUpperCase() + f.slice(1)}: ${values[f] || '—'}`).join('  •  ');
+    setSteps((s) => [...s, { kind: 'msg', role: 'user', text: summary }]);
+    // Next: dialog tree (or straight to AI)
+    setSteps((s) => {
+      const next = [...s];
+      const tree = pc.dialog_tree;
+      if (tree && tree.nodes && tree.start_node && tree.nodes[tree.start_node]) {
+        next.push({ kind: 'quick', node: tree.nodes[tree.start_node] });
+      } else {
+        unlock();
+      }
+      return next;
+    });
+  };
+
+  /* --- quick reply click --- */
+  const handleQuickReply = (node: PreChatNode, opt: PreChatOption) => {
+    pathRef.current.push({ node: node.id || '', label: opt.label });
+    const nextSteps: FlowStep[] = [{ kind: 'msg', role: 'user', text: opt.label }];
+    const tree = pc.dialog_tree;
+    if (opt.next === '__ai__') {
+      unlock();
+    } else if (tree?.nodes?.[opt.next]) {
+      nextSteps.push({ kind: 'quick', node: tree.nodes[opt.next] });
+    } else {
+      unlock();
+    }
+    setSteps((s) => [...s, ...nextSteps]);
+  };
+
+  /* --- free chat send --- */
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || !agent.widget_token) return;
+    if (!text || busy || !agent.widget_token || !readyRef.current) return;
     setInput('');
-    setMessages((m) => [...m, { role: 'user', text }]);
+    setSteps((s) => [...s, { kind: 'msg', role: 'user', text }]);
     setBusy(true);
     try {
       const res = await fetch(`/api/widget/${agent.widget_token}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, visitor: visitorRef.current, name: 'You (preview)' }),
+        body: JSON.stringify({
+          message: text,
+          visitor: visitorRef.current,
+          name: infoRef.current.name || 'You (preview)',
+          customer_info: Object.keys(infoRef.current).length ? infoRef.current : undefined,
+          flow_path: pathRef.current.length ? pathRef.current : undefined,
+        }),
       });
       const data = await res.json();
-      setMessages((m) => [
+      setSteps((m) => [
         ...m,
-        { role: 'bot', text: data.reply || '(no reply — check the agent has an API key configured)' },
+        { kind: 'msg', role: 'bot', text: data.reply || '(no reply — check the agent has an API key configured)' },
       ]);
     } catch {
-      setMessages((m) => [...m, { role: 'bot', text: 'Network error — please try again.' }]);
+      setSteps((m) => [...m, { kind: 'msg', role: 'bot', text: 'Network error — please try again.' }]);
     } finally {
       setBusy(false);
     }
@@ -194,22 +284,58 @@ function ChatPreview({ agent }: { agent: Agent }) {
         </div>
       </div>
 
-      {/* Messages */}
+      {/* Messages + flow */}
       <div ref={bodyRef} className="flex-1 space-y-3 overflow-y-auto bg-muted/30 p-4">
-        {messages.map((m, i) => (
-          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div
-              className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
-              style={
-                m.role === 'user'
-                  ? { backgroundColor: color, color: '#fff', borderBottomRightRadius: 6 }
-                  : { backgroundColor: 'hsl(var(--card))', color: 'hsl(var(--foreground))', border: '1px solid hsl(var(--border))', borderBottomLeftRadius: 6 }
-              }
-            >
-              {m.text}
+        {steps.map((step, i) => {
+          if (step.kind === 'msg') {
+            return (
+              <div key={i} className={`flex ${step.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
+                  style={
+                    step.role === 'user'
+                      ? { backgroundColor: color, color: '#fff', borderBottomRightRadius: 6 }
+                      : { backgroundColor: 'hsl(var(--card))', color: 'hsl(var(--foreground))', border: '1px solid hsl(var(--border))', borderBottomLeftRadius: 6 }
+                  }
+                >
+                  {step.text}
+                </div>
+              </div>
+            );
+          }
+          if (step.kind === 'form') {
+            return (
+              <PreChatForm key={i} fields={step.fields} color={color} onSubmit={handleFormSubmit} />
+            );
+          }
+          // quick replies
+          return (
+            <div key={i} className="space-y-2">
+              <div className="flex justify-start">
+                <div
+                  className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
+                  style={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderBottomLeftRadius: 6 }}
+                >
+                  {step.node.message}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 pl-1">
+                {(step.node.options || []).map((opt, j) => (
+                  <button
+                    key={j}
+                    onClick={() => handleQuickReply(step.node, opt)}
+                    className="rounded-full border px-3 py-1.5 text-xs font-medium transition-colors hover:text-white"
+                    style={{ borderColor: color, color }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = color)}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {busy && (
           <div className="flex justify-start">
             <div className="rounded-2xl border bg-card px-4 py-2.5">
@@ -225,13 +351,58 @@ function ChatPreview({ agent }: { agent: Agent }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
-          placeholder={agent.widget_token ? 'Type a message…' : 'Enable the website widget to test'}
-          disabled={!agent.widget_token || busy}
+          placeholder={
+            !agent.widget_token
+              ? 'Enable the website widget to test'
+              : !readyRef.current
+                ? 'Complete the pre-chat steps above first…'
+                : 'Type a message…'
+          }
+          disabled={!agent.widget_token || busy || !readyRef.current}
         />
-        <Button size="icon" onClick={send} disabled={!agent.widget_token || busy || !input.trim()} style={{ backgroundColor: color }}>
+        <Button size="icon" onClick={send} disabled={!agent.widget_token || busy || !input.trim() || !readyRef.current} style={{ backgroundColor: color }}>
           <Send className="h-4 w-4 text-white" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+/* Inline pre-chat form for the preview panel */
+function PreChatForm({
+  fields,
+  color,
+  onSubmit,
+}: {
+  fields: string[];
+  color: string;
+  onSubmit: (values: Record<string, string>, fields: string[]) => void;
+}) {
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const labels: Record<string, string> = { name: 'Your name', email: 'Email address', phone: 'Phone number', company: 'Company' };
+  const types: Record<string, string> = { email: 'email', phone: 'tel' };
+  return (
+    <div className="mx-1 space-y-2 rounded-xl border bg-card p-3 shadow-sm">
+      {fields.map((f) => (
+        <label key={f} className="block">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">{labels[f]}</span>
+          <Input
+            type={types[f] || 'text'}
+            value={vals[f] || ''}
+            onChange={(e) => setVals((v) => ({ ...v, [f]: e.target.value.trim() }))}
+            placeholder={`Enter ${labels[f].toLowerCase()}…`}
+            className="h-8 text-xs"
+          />
+        </label>
+      ))}
+      <Button
+        size="sm"
+        className="w-full"
+        style={{ backgroundColor: color }}
+        onClick={() => onSubmit(vals, fields)}
+      >
+        Start chat →
+      </Button>
     </div>
   );
 }
