@@ -72,6 +72,14 @@ export async function POST(req: Request) {
         widget_position: body.widget_position === 'left' ? 'left' : 'right',
         is_active: body.is_active !== false,
         pre_chat_config: body.pre_chat_config || {},
+        channel:
+          body.channel === 'whatsapp' || body.channel === 'website'
+            ? body.channel
+            : 'both',
+        wa_config:
+          body.wa_config && typeof body.wa_config === 'object'
+            ? body.wa_config
+            : {},
       })
       .select()
       .single()

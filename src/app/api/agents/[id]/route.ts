@@ -70,6 +70,8 @@ export async function PATCH(
       'widget_position',
       'is_active',
       'pre_chat_config',
+      'channel',
+      'wa_config',
     ]
     const patch: Record<string, unknown> = {}
     for (const key of allowed) {

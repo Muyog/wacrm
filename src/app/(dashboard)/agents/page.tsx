@@ -1,25 +1,29 @@
 'use client';
 
 /**
- * AI Agents — builder + live widget preview.
+ * AI Agents — channel-scoped builder + tailored live previews.
  *
- * Layout: full-width workspace. Left = agent list / editor form.
- * Right = sticky live chat panel that talks to the real agent through
- * the same public widget API the embeddable bubble uses, so what you
- * test here is exactly what a website visitor experiences.
+ * Creation is a wizard:
+ *   1. Pick the channel — WhatsApp or Website (each agent serves one).
+ *   2. Identity + brain — name, model, prompt.
+ *   3. Channel setup — WhatsApp: greeting, response mode (flows / AI),
+ *      quick replies, flow attachment. Website: widget look + optional
+ *      pre-chat collection & menu.
+ *
+ * The preview panel is channel-tailored: WhatsApp agents test in a phone
+ * frame through /api/agents/[id]/simulate (real flows dry-run + real AI);
+ * website agents keep the embeddable-widget preview with its pre-chat
+ * form/menu state machine.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Bot,
   Plus,
   Pencil,
   Trash2,
   ExternalLink,
-  Copy,
-  Check,
   Loader2,
-  Send,
   X,
   Globe,
   MessageCircle,
@@ -30,6 +34,12 @@ import {
   MessageSquare,
   Hash,
   ArrowDown,
+  Smartphone,
+  Workflow,
+  Zap,
+  Settings2,
+  Link2,
+  Unlink,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -53,358 +63,96 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/hooks/use-auth';
-
-interface CustomTool {
-  type: 'custom';
-  name: string;
-  description: string;
-}
-
-interface Agent {
-  id: string;
-  name: string;
-  description: string | null;
-  avatar_url: string | null;
-  system_prompt: string;
-  model_provider: 'openai' | 'anthropic' | 'gemini';
-  model: string;
-  temperature: number;
-  max_tokens: number;
-  tools: (string | CustomTool)[];
-  auto_reply_enabled: boolean;
-  website_enabled: boolean;
-  widget_token: string | null;
-  widget_title: string;
-  widget_welcome_message: string;
-  widget_primary_color: string;
-  widget_position: 'left' | 'right';
-  is_active: boolean;
-  pre_chat_config: PreChatConfig;
-}
-
-interface PreChatCollectInfo { name?: boolean; email?: boolean; phone?: boolean; company?: boolean }
-interface PreChatOption { label: string; next: string }
-interface PreChatNode { id?: string; message: string; options?: PreChatOption[] }
-interface PreChatDialogTree { nodes: Record<string, PreChatNode>; start_node: string }
-interface PreChatConfig {
-  enabled: boolean;
-  collect_info?: PreChatCollectInfo;
-  dialog_tree?: PreChatDialogTree;
-  ai_fallback?: boolean;
-  start_with_ai?: boolean;
-}
+import {
+  ChatPreview,
+  WhatsAppPreview,
+  type Agent,
+  type CustomTool,
+  type PreChatConfig,
+  type PreChatNode,
+  type PreChatOption,
+  type WaConfig,
+} from '@/components/agents/agent-previews';
 
 const TOOL_OPTIONS = [
-  { id: 'knowledge_base', label: 'Knowledge base', desc: 'Answer from your uploaded docs — FAQs, policies, products.', icon: BookOpen },
-  { id: 'handoff', label: 'Human handoff', desc: 'Pass the chat to a human agent when unsure or asked.', icon: HandMetal },
+  {
+    id: 'knowledge_base',
+    label: 'Knowledge base',
+    desc: 'Answer from your uploaded docs — FAQs, policies, products.',
+    icon: BookOpen,
+  },
+  {
+    id: 'handoff',
+    label: 'Human handoff',
+    desc: 'Pass the chat to a human agent when unsure or asked.',
+    icon: HandMetal,
+  },
 ];
 
-function emptyAgent(): Omit<Agent, 'id'> {
-  return {
+type Channel = 'whatsapp' | 'website';
+
+interface WaQuickReply {
+  label: string;
+}
+
+interface FlowRowLite {
+  id: string;
+  name: string;
+  status: string;
+  agent_id: string | null;
+}
+
+function emptyAgent(channel: Channel): Omit<Agent, 'id'> {
+  const base = {
     name: '',
     description: '',
     avatar_url: null,
     system_prompt:
       'You are a helpful assistant for this business. Be concise, friendly, and accurate. If you cannot help, say so and offer to connect the customer with a human.',
-    model_provider: 'gemini',
+    model_provider: 'gemini' as const,
     model: 'gemini-2.5-flash',
     temperature: 0.7,
     max_tokens: 1024,
-    tools: ['knowledge_base', 'handoff'],
+    tools: ['knowledge_base', 'handoff'] as (string | CustomTool)[],
     auto_reply_enabled: true,
+    is_active: true,
+  };
+  if (channel === 'whatsapp') {
+    return {
+      ...base,
+      website_enabled: false,
+      widget_token: null,
+      widget_title: 'Chat with us',
+      widget_welcome_message: 'Hi! How can we help you today?',
+      widget_primary_color: '#7c3aed',
+      widget_position: 'right' as const,
+      pre_chat_config: { enabled: false } as PreChatConfig,
+      channel: 'whatsapp',
+      wa_config: {
+        greeting: 'Hi! 👋 How can we help you today?',
+        response_mode: 'flows_then_ai',
+        quick_replies: [],
+      } as Partial<WaConfig>,
+    };
+  }
+  return {
+    ...base,
     website_enabled: true,
     widget_token: null,
     widget_title: 'Chat with us',
     widget_welcome_message: 'Hi! How can we help you today?',
     widget_primary_color: '#7c3aed',
-    widget_position: 'right',
-    is_active: true,
+    widget_position: 'right' as const,
     pre_chat_config: {
       enabled: false,
       collect_info: { name: true, email: false, phone: false, company: false },
       dialog_tree: { nodes: {}, start_node: '' },
       ai_fallback: true,
       start_with_ai: false,
-    },
+    } as PreChatConfig,
+    channel: 'website',
+    wa_config: {},
   };
-}
-
-/* ------------------------------------------------------------------ */
-/* Live chat preview — talks through the public widget API, and runs   */
-/* the SAME pre-chat flow as the embeddable widget: info form →        */
-/* dialog tree (quick replies) → free AI chat.                         */
-/* ------------------------------------------------------------------ */
-
-type FlowStep =
-  | { kind: 'msg'; role: 'bot' | 'user'; text: string }
-  | { kind: 'form'; fields: Required<Pick<PreChatCollectInfo, 'name' | 'email' | 'phone' | 'company'>> extends never ? string[] : string[] }
-  | { kind: 'quick'; node: PreChatNode };
-
-function ChatPreview({ agent }: { agent: Agent }) {
-  const [steps, setSteps] = useState<FlowStep[]>([]);
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const visitorRef = useRef<string>('');
-  const infoRef = useRef<Record<string, string>>({});
-  const pathRef = useRef<{ node: string; label: string }[]>([]);
-  const readyRef = useRef(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [chatReady, setChatReady] = useState(false);
-
-  const pc = agent.pre_chat_config || {};
-  const pcEnabled = !!pc.enabled && !pc.start_with_ai;
-
-  // Reset the thread when switching agents or changing config.
-  useEffect(() => {
-    visitorRef.current = 'preview-' + agent.id.slice(0, 8) + '-' + Math.random().toString(36).slice(2, 8);
-    infoRef.current = {};
-    pathRef.current = [];
-    readyRef.current = false;
-    setChatReady(false);
-    const initial: FlowStep[] = [{ kind: 'msg', role: 'bot', text: agent.widget_welcome_message || 'Hi! How can we help you today?' }];
-    if (!pcEnabled) {
-      readyRef.current = true;
-      setChatReady(true);
-    } else {
-      const collect = pc.collect_info || {};
-      const hasForm = collect.name || collect.email || collect.phone || collect.company;
-      if (hasForm) {
-        initial.push({
-          kind: 'form',
-          fields: (['name', 'email', 'phone', 'company'] as const).filter((f) => collect[f]),
-        });
-      } else {
-        startTree(initial);
-      }
-    }
-    setSteps(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent.id]);
-
-  useEffect(() => {
-    bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
-  }, [steps, busy]);
-
-  function startTree(list: FlowStep[]) {
-    const tree = pc.dialog_tree;
-    if (tree && tree.nodes && tree.start_node && tree.nodes[tree.start_node]) {
-      list.push({ kind: 'quick', node: tree.nodes[tree.start_node] });
-    } else {
-      unlock();
-    }
-  }
-
-  function unlock() {
-    readyRef.current = true;
-    setChatReady(true);
-  }
-
-  /* --- form submit --- */
-  const handleFormSubmit = (values: Record<string, string>, fields: string[]) => {
-    infoRef.current = values;
-    const summary = fields.map((f) => `${f.charAt(0).toUpperCase() + f.slice(1)}: ${values[f] || '—'}`).join('  •  ');
-    setSteps((s) => [...s, { kind: 'msg', role: 'user', text: summary }]);
-    // Next: dialog tree (or straight to AI)
-    setSteps((s) => {
-      const next = [...s];
-      const tree = pc.dialog_tree;
-      if (tree && tree.nodes && tree.start_node && tree.nodes[tree.start_node]) {
-        next.push({ kind: 'quick', node: tree.nodes[tree.start_node] });
-      } else {
-        unlock();
-      }
-      return next;
-    });
-  };
-
-  /* --- quick reply click --- */
-  const handleQuickReply = (node: PreChatNode, opt: PreChatOption) => {
-    pathRef.current.push({ node: node.id || '', label: opt.label });
-    const nextSteps: FlowStep[] = [{ kind: 'msg', role: 'user', text: opt.label }];
-    const tree = pc.dialog_tree;
-    if (opt.next === '__ai__') {
-      unlock();
-    } else if (tree?.nodes?.[opt.next]) {
-      nextSteps.push({ kind: 'quick', node: tree.nodes[opt.next] });
-    } else {
-      unlock();
-    }
-    setSteps((s) => [...s, ...nextSteps]);
-  };
-
-  /* --- free chat send --- */
-  const send = async () => {
-    const text = input.trim();
-    if (!text || busy || !agent.widget_token || !readyRef.current) return;
-    setInput('');
-    setSteps((s) => [...s, { kind: 'msg', role: 'user', text }]);
-    setBusy(true);
-    try {
-      const res = await fetch(`/api/widget/${agent.widget_token}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          visitor: visitorRef.current,
-          name: infoRef.current.name || 'You (preview)',
-          customer_info: Object.keys(infoRef.current).length ? infoRef.current : undefined,
-          flow_path: pathRef.current.length ? pathRef.current : undefined,
-        }),
-      });
-      const data = await res.json();
-      setSteps((m) => [
-        ...m,
-        { kind: 'msg', role: 'bot', text: data.reply || '(no reply — check the agent has an API key configured)' },
-      ]);
-    } catch {
-      setSteps((m) => [...m, { kind: 'msg', role: 'bot', text: 'Network error — please try again.' }]);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const color = agent.widget_primary_color || '#7c3aed';
-
-  return (
-    <div className="flex h-[560px] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm">
-      {/* Header mimicking the real widget */}
-      <div className="flex items-center gap-3 px-4 py-3" style={{ backgroundColor: color }}>
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/20">
-          <Bot className="h-5 w-5 text-white" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-white">
-            {agent.widget_title || agent.name}
-          </p>
-          <p className="flex items-center gap-1.5 text-xs text-white/80">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
-            Live preview — replies come from your agent
-          </p>
-        </div>
-      </div>
-
-      {/* Messages + flow */}
-      <div ref={bodyRef} className="flex-1 space-y-3 overflow-y-auto bg-muted/30 p-4">
-        {steps.map((step, i) => {
-          if (step.kind === 'msg') {
-            return (
-              <div key={i} className={`flex ${step.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div
-                  className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
-                  style={
-                    step.role === 'user'
-                      ? { backgroundColor: color, color: '#fff', borderBottomRightRadius: 6 }
-                      : { backgroundColor: 'hsl(var(--card))', color: 'hsl(var(--foreground))', border: '1px solid hsl(var(--border))', borderBottomLeftRadius: 6 }
-                  }
-                >
-                  {step.text}
-                </div>
-              </div>
-            );
-          }
-          if (step.kind === 'form') {
-            return (
-              <PreChatForm key={i} fields={step.fields} color={color} onSubmit={handleFormSubmit} />
-            );
-          }
-          // quick replies
-          return (
-            <div key={i} className="space-y-2">
-              <div className="flex justify-start">
-                <div
-                  className="max-w-[85%] whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
-                  style={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderBottomLeftRadius: 6 }}
-                >
-                  {step.node.message}
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2 pl-1">
-                {(step.node.options || []).map((opt, j) => (
-                  <button
-                    key={j}
-                    onClick={() => handleQuickReply(step.node, opt)}
-                    className="rounded-full border px-3 py-1.5 text-xs font-medium transition-colors hover:text-white"
-                    style={{ borderColor: color, color }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = color)}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-        {busy && (
-          <div className="flex justify-start">
-            <div className="rounded-2xl border bg-card px-4 py-2.5">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Composer */}
-      <div className="flex items-center gap-2 border-t bg-card p-3">
-        <Input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && send()}
-          placeholder={
-            !agent.widget_token
-              ? 'Enable the website widget to test'
-              : !readyRef.current
-                ? 'Complete the pre-chat steps above first…'
-                : 'Type a message…'
-          }
-          disabled={!agent.widget_token || busy || !readyRef.current}
-        />
-        <Button size="icon" onClick={send} disabled={!agent.widget_token || busy || !input.trim() || !readyRef.current} style={{ backgroundColor: color }}>
-          <Send className="h-4 w-4 text-white" />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-/* Inline pre-chat form for the preview panel */
-function PreChatForm({
-  fields,
-  color,
-  onSubmit,
-}: {
-  fields: string[];
-  color: string;
-  onSubmit: (values: Record<string, string>, fields: string[]) => void;
-}) {
-  const [vals, setVals] = useState<Record<string, string>>({});
-  const labels: Record<string, string> = { name: 'Your name', email: 'Email address', phone: 'Phone number', company: 'Company' };
-  const types: Record<string, string> = { email: 'email', phone: 'tel' };
-  return (
-    <div className="mx-1 space-y-2 rounded-xl border bg-card p-3 shadow-sm">
-      {fields.map((f) => (
-        <label key={f} className="block">
-          <span className="mb-1 block text-xs font-medium text-muted-foreground">{labels[f]}</span>
-          <Input
-            type={types[f] || 'text'}
-            value={vals[f] || ''}
-            onChange={(e) => setVals((v) => ({ ...v, [f]: e.target.value.trim() }))}
-            placeholder={`Enter ${labels[f].toLowerCase()}…`}
-            className="h-8 text-xs"
-          />
-        </label>
-      ))}
-      <Button
-        size="sm"
-        className="w-full"
-        style={{ backgroundColor: color }}
-        onClick={() => onSubmit(vals, fields)}
-      >
-        Start chat →
-      </Button>
-    </div>
-  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -416,6 +164,13 @@ export default function AgentsBuilderPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /* Wizard state */
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizStep, setWizStep] = useState(0);
+  const [wizChannel, setWizChannel] = useState<Channel>('whatsapp');
+  const [wizDraft, setWizDraft] = useState<Omit<Agent, 'id'> | null>(null);
+  const [wizApiKey, setWizApiKey] = useState('');
+  /* Edit state */
   const [draft, setDraft] = useState<Omit<Agent, 'id'> | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -464,12 +219,57 @@ export default function AgentsBuilderPage() {
       ? `<script src="${origin}/widget/widget.js" data-widget="${token}" defer></script>`
       : '';
 
-  const openNew = () => {
-    setEditingId(null);
-    setDraft({ ...emptyAgent() });
-    setApiKeyInput('');
+  /* ---------- wizard ---------- */
+
+  const openWizard = () => {
+    setWizChannel('whatsapp');
+    setWizStep(0);
+    setWizDraft(null);
+    setWizApiKey('');
     setError(null);
+    setWizardOpen(true);
   };
+
+  const chooseChannel = (ch: Channel) => {
+    setWizChannel(ch);
+    setWizDraft(emptyAgent(ch));
+    setWizStep(1);
+  };
+
+  const createFromWizard = async () => {
+    if (!wizDraft) return;
+    if (!wizDraft.name.trim()) {
+      setError('Give your agent a name.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        ...wizDraft,
+        generate_widget:
+          wizChannel === 'website' && !wizDraft.widget_token,
+      };
+      if (wizApiKey.trim()) payload.api_key = wizApiKey.trim();
+      const res = await fetch('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Create failed');
+      await loadAgents();
+      if (data.agent?.id) setSelectedId(data.agent.id);
+      setWizardOpen(false);
+      openEdit({ ...(wizDraft as Agent), ...data.agent });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Create failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  /* ---------- edit ---------- */
 
   const openEdit = (agent: Agent) => {
     setSelectedId(agent.id);
@@ -492,7 +292,9 @@ export default function AgentsBuilderPage() {
       widget_primary_color: agent.widget_primary_color,
       widget_position: agent.widget_position,
       is_active: agent.is_active,
-      pre_chat_config: agent.pre_chat_config || {},
+      pre_chat_config: agent.pre_chat_config || { enabled: false },
+      channel: agent.channel ?? 'both',
+      wa_config: agent.wa_config ?? {},
     });
     setApiKeyInput('');
     setError(null);
@@ -514,20 +316,25 @@ export default function AgentsBuilderPage() {
     try {
       const payload: Record<string, unknown> = {
         ...draft,
-        generate_widget: draft.website_enabled && !draft.widget_token,
+        generate_widget:
+          draft.channel !== 'whatsapp' &&
+          draft.website_enabled &&
+          !draft.widget_token,
       };
       if (apiKeyInput.trim()) payload.api_key = apiKeyInput.trim();
 
-      const res = await fetch(editingId ? `/api/agents/${editingId}` : '/api/agents', {
-        method: editingId ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+      const res = await fetch(
+        editingId ? `/api/agents/${editingId}` : '/api/agents',
+        {
+          method: editingId ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        },
+      );
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Save failed');
 
       await loadAgents();
-      if (!editingId && data.agent?.id) setSelectedId(data.agent.id);
       close();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
@@ -537,7 +344,12 @@ export default function AgentsBuilderPage() {
   };
 
   const remove = async (agent: Agent) => {
-    if (!confirm(`Delete "${agent.name}"? Its widget stops working and its WhatsApp numbers become unbound.`)) return;
+    if (
+      !confirm(
+        `Delete "${agent.name}"? Its widget stops working and its WhatsApp numbers become unbound.`,
+      )
+    )
+      return;
     await fetch(`/api/agents/${agent.id}`, { method: 'DELETE' }).catch(() => {});
     if (selectedId === agent.id) setSelectedId(null);
     await loadAgents();
@@ -560,7 +372,14 @@ export default function AgentsBuilderPage() {
     if (!name) return;
     setDraft({
       ...draft,
-      tools: [...draft.tools, { type: 'custom', name, description: newToolDesc.trim() || 'Custom capability.' }],
+      tools: [
+        ...draft.tools,
+        {
+          type: 'custom',
+          name,
+          description: newToolDesc.trim() || 'Custom capability.',
+        },
+      ],
     });
     setNewToolName('');
     setNewToolDesc('');
@@ -576,9 +395,15 @@ export default function AgentsBuilderPage() {
     } catch {}
   };
 
+  const channelOf = (a: Agent): Channel | 'both' =>
+    (a.channel as Channel | 'both') ?? 'both';
+  const isWa = (a: Agent) => channelOf(a) !== 'website';
+
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center text-muted-foreground">Loading agents…</div>
+      <div className="flex h-64 items-center justify-center text-muted-foreground">
+        Loading agents…
+      </div>
     );
   }
 
@@ -589,15 +414,19 @@ export default function AgentsBuilderPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">AI Agents</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Build assistants for WhatsApp and your website — prompt, model, tools, channels.
+            Build assistants for WhatsApp or your website — each channel gets
+            its own setup and live preview.
             {' '}
-            <a href="/agents/playground" className="underline underline-offset-2 hover:text-foreground">
+            <a
+              href="/agents/playground"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
               Open playground →
             </a>
           </p>
         </div>
         {canEdit && (
-          <Button onClick={openNew} size="lg">
+          <Button onClick={openWizard} size="lg">
             <Plus className="mr-2 h-4 w-4" /> New Agent
           </Button>
         )}
@@ -612,12 +441,12 @@ export default function AgentsBuilderPage() {
             <div>
               <p className="font-medium">No agents yet</p>
               <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-                Create your first AI agent — give it instructions, pick a model, connect WhatsApp
-                numbers or a website widget.
+                Create your first AI agent — pick WhatsApp or Website and follow
+                the guided steps.
               </p>
             </div>
             {canEdit && (
-              <Button onClick={openNew} className="mt-2">
+              <Button onClick={openWizard} className="mt-2">
                 <Plus className="mr-2 h-4 w-4" /> Create your first agent
               </Button>
             )}
@@ -630,38 +459,84 @@ export default function AgentsBuilderPage() {
           <div className="min-w-0 space-y-6">
             {!draft && selected && (
               <>
-                {/* Identity strip — wide, roomy layout */}
+                {/* Identity strip */}
                 <Card>
                   <CardContent className="p-6 lg:p-8">
                     <div className="flex flex-col gap-6 lg:flex-row lg:items-center">
                       <div
                         className="flex h-20 w-20 shrink-0 items-center justify-center rounded-3xl"
-                        style={{ backgroundColor: (selected.widget_primary_color || '#7c3aed') + '22' }}
+                        style={{
+                          backgroundColor:
+                            (selected.widget_primary_color || '#7c3aed') + '22',
+                        }}
                       >
-                        <Bot className="h-10 w-10" style={{ color: selected.widget_primary_color || '#7c3aed' }} />
+                        <Bot
+                          className="h-10 w-10"
+                          style={{
+                            color: selected.widget_primary_color || '#7c3aed',
+                          }}
+                        />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-3">
-                          <h2 className="break-words text-2xl font-bold tracking-tight">{selected.name}</h2>
+                          <h2 className="break-words text-2xl font-bold tracking-tight">
+                            {selected.name}
+                          </h2>
+                          {isWa(selected) && (
+                            <Badge
+                              variant="secondary"
+                              className="gap-1 border-emerald-600/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                            >
+                              <MessageCircle className="h-3 w-3" /> WhatsApp agent
+                            </Badge>
+                          )}
+                          {!isWa(selected) && (
+                            <Badge
+                              variant="secondary"
+                              className="gap-1 border-violet-600/40 bg-violet-500/10 text-violet-600 dark:text-violet-400"
+                            >
+                              <Globe className="h-3 w-3" /> Website agent
+                            </Badge>
+                          )}
                           {selected.is_active ? (
-                            <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" variant="secondary">Active</Badge>
+                            <Badge className="bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" variant="secondary">
+                              Active
+                            </Badge>
                           ) : (
                             <Badge variant="secondary">Paused</Badge>
                           )}
                         </div>
                         <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                          {selected.description || 'No description yet — add one in the editor.'}
+                          {selected.description ||
+                            'No description yet — add one in the editor.'}
                         </p>
                         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
                           <Badge variant="outline" className="gap-1 px-2.5 py-1">
-                            <Sparkles className="h-3 w-3" /> {selected.model_provider} · {selected.model}
+                            <Sparkles className="h-3 w-3" />{' '}
+                            {selected.model_provider} · {selected.model}
                           </Badge>
-                          <Badge variant="outline" className="gap-1 px-2.5 py-1"><Globe className="h-3 w-3" /> Website</Badge>
-                          <Badge variant="outline" className="gap-1 px-2.5 py-1"><MessageCircle className="h-3 w-3" /> WhatsApp</Badge>
+                          {isWa(selected) && (
+                            <Badge variant="outline" className="gap-1 px-2.5 py-1">
+                              <Workflow className="h-3 w-3" /> Flows:{' '}
+                              {String(
+                                (selected.wa_config?.response_mode as string) ??
+                                  'flows_then_ai',
+                              ).replace('_', '-')}
+                            </Badge>
+                          )}
+                          {!isWa(selected) && selected.pre_chat_config?.enabled && (
+                            <Badge variant="outline" className="gap-1 px-2.5 py-1">
+                              <MessageSquare className="h-3 w-3" /> Pre-chat on
+                            </Badge>
+                          )}
                           {hasKey ? (
-                            <Badge variant="outline" className="border-emerald-500/40 px-2.5 py-1 text-emerald-600 dark:text-emerald-400">API key ✓</Badge>
+                            <Badge variant="outline" className="border-emerald-500/40 px-2.5 py-1 text-emerald-600 dark:text-emerald-400">
+                              API key ✓
+                            </Badge>
                           ) : (
-                            <Badge variant="outline" className="border-amber-500/40 px-2.5 py-1 text-amber-600 dark:text-amber-400">No API key</Badge>
+                            <Badge variant="outline" className="border-amber-500/40 px-2.5 py-1 text-amber-600 dark:text-amber-400">
+                              No API key
+                            </Badge>
                           )}
                         </div>
                       </div>
@@ -672,18 +547,24 @@ export default function AgentsBuilderPage() {
                           <Pencil className="mr-2 h-4 w-4" /> Edit agent
                         </Button>
                       )}
-                      {selected.website_enabled && selected.widget_token && (
-                        <a
-                          href={`/widget/preview?token=${selected.widget_token}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-border bg-transparent px-5 text-sm font-medium transition-colors hover:bg-muted"
-                        >
-                          <ExternalLink className="h-4 w-4" /> Web chatbot preview
-                        </a>
-                      )}
+                      {!isWa(selected) &&
+                        selected.website_enabled &&
+                        selected.widget_token && (
+                          <a
+                            href={`/widget/preview?token=${selected.widget_token}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-border bg-transparent px-5 text-sm font-medium transition-colors hover:bg-muted"
+                          >
+                            <ExternalLink className="h-4 w-4" /> Web chatbot preview
+                          </a>
+                        )}
                       {canEdit && (
-                        <Button variant="ghost" onClick={() => remove(selected)} className="ml-auto text-destructive hover:text-destructive">
+                        <Button
+                          variant="ghost"
+                          onClick={() => remove(selected)}
+                          className="ml-auto text-destructive hover:text-destructive"
+                        >
                           <Trash2 className="mr-2 h-4 w-4" /> Delete
                         </Button>
                       )}
@@ -691,25 +572,39 @@ export default function AgentsBuilderPage() {
                   </CardContent>
                 </Card>
 
-                {/* Tools + prompt live in the Edit dialog — keep this
-                    page a clean overview. Show a one-line summary only. */}
+                {/* Summary line */}
                 <Card>
                   <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 p-5 text-sm text-muted-foreground">
                     <span>
-                      <strong className="text-foreground">{selected.tools.length}</strong> tool{selected.tools.length === 1 ? '' : 's'} enabled
+                      <strong className="text-foreground">
+                        {selected.tools.length}
+                      </strong>{' '}
+                      tool{selected.tools.length === 1 ? '' : 's'} enabled
                       {selected.tools.length > 0 && (
                         <span className="ml-1">
                           ({selected.tools.map((t) =>
                             typeof t === 'string'
-                              ? (t === 'knowledge_base' ? 'Knowledge base' : t === 'handoff' ? 'Human handoff' : t)
-                              : t.name
+                              ? t === 'knowledge_base'
+                                ? 'Knowledge base'
+                                : t === 'handoff'
+                                  ? 'Human handoff'
+                                  : t
+                              : t.name,
                           ).join(', ')})
                         </span>
                       )}
                     </span>
                     <span className="hidden sm:inline text-border">|</span>
-                    <span>Prompt: {selected.system_prompt.trim().split(/\s+/).length} words</span>
-                    <Button variant="link" size="sm" className="ml-auto h-auto p-0" onClick={() => openEdit(selected)}>
+                    <span>
+                      Prompt:{' '}
+                      {selected.system_prompt.trim().split(/\s+/).length} words
+                    </span>
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="ml-auto h-auto p-0"
+                      onClick={() => openEdit(selected)}
+                    >
                       Configure in editor →
                     </Button>
                   </CardContent>
@@ -737,12 +632,24 @@ export default function AgentsBuilderPage() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium">{a.name}</p>
-                          <p className="truncate text-xs text-muted-foreground">{a.model_provider} · {a.model}</p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {channelOf(a) === 'whatsapp'
+                              ? 'WhatsApp'
+                              : channelOf(a) === 'website'
+                                ? 'Website'
+                                : `${a.model_provider} · ${a.model}`}
+                          </p>
                         </div>
                         {a.is_active ? (
-                          <span className="h-2 w-2 rounded-full bg-emerald-500" title="Active" />
+                          <span
+                            className="h-2 w-2 rounded-full bg-emerald-500"
+                            title="Active"
+                          />
                         ) : (
-                          <span className="h-2 w-2 rounded-full bg-muted-foreground/40" title="Paused" />
+                          <span
+                            className="h-2 w-2 rounded-full bg-muted-foreground/40"
+                            title="Paused"
+                          />
                         )}
                       </button>
                     ))}
@@ -751,18 +658,27 @@ export default function AgentsBuilderPage() {
             )}
           </div>
 
-          {/* RIGHT: live chat preview */}
+          {/* RIGHT: channel-tailored live preview */}
           {selected && !draft && (
             <div className="space-y-3 xl:sticky xl:top-6 xl:self-start">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-muted-foreground">Live preview</h3>
-                <span className="text-xs text-muted-foreground">Test replies in real time</span>
+                <h3 className="text-sm font-semibold text-muted-foreground">
+                  Live preview
+                </h3>
+                <span className="text-xs text-muted-foreground">
+                  Test replies in real time
+                </span>
               </div>
-              <ChatPreview agent={selected} />
+              {isWa(selected) ? (
+                <WhatsAppPreview agent={selected} />
+              ) : (
+                <ChatPreview agent={selected} />
+              )}
               {!hasKey && (
                 <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-                  This agent has no API key yet — open <strong>Edit agent</strong> and paste your
-                  Gemini / OpenAI key to see real replies.
+                  This agent has no API key yet — open <strong>Edit agent</strong>{' '}
+                  and paste your Gemini / OpenAI key to see real AI replies.
+                  Flow replies work without a key.
                 </p>
               )}
             </div>
@@ -770,13 +686,233 @@ export default function AgentsBuilderPage() {
         </div>
       )}
 
+      {/* ---------------- Creation wizard ---------------- */}
+      <Dialog open={wizardOpen} onOpenChange={(o) => !o && setWizardOpen(false)}>
+        <DialogContent className="max-h-[94vh] w-full max-w-2xl overflow-y-auto sm:max-w-2xl">
+          {wizStep === 0 && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Bot className="h-5 w-5 text-primary" /> Create a new agent
+                </DialogTitle>
+              </DialogHeader>
+              <p className="-mt-1 text-sm text-muted-foreground">
+                Where will this agent work? It gets a tailored setup for that
+                channel.
+              </p>
+              <div className="grid gap-4 py-2 sm:grid-cols-2">
+                <button
+                  onClick={() => chooseChannel('whatsapp')}
+                  className="group flex flex-col items-start gap-2 rounded-2xl border p-5 text-left transition-all hover:border-emerald-500 hover:bg-emerald-500/5"
+                >
+                  <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#25D366]/15">
+                    <MessageCircle className="h-6 w-6 text-[#128C7E]" />
+                  </span>
+                  <span className="text-base font-semibold">WhatsApp</span>
+                  <span className="text-xs leading-relaxed text-muted-foreground">
+                    Answers your connected numbers with flows (buttons, lists,
+                    questions) plus AI for everything else.
+                  </span>
+                  <span className="mt-1 flex flex-wrap gap-1">
+                    <Badge variant="outline" className="text-[10px]">Quick replies</Badge>
+                    <Badge variant="outline" className="text-[10px]">Flows</Badge>
+                    <Badge variant="outline" className="text-[10px]">AI fallback</Badge>
+                  </span>
+                </button>
+                <button
+                  onClick={() => chooseChannel('website')}
+                  className="group flex flex-col items-start gap-2 rounded-2xl border p-5 text-left transition-all hover:border-violet-500 hover:bg-violet-500/5"
+                >
+                  <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-500/15">
+                    <Globe className="h-6 w-6 text-violet-600 dark:text-violet-400" />
+                  </span>
+                  <span className="text-base font-semibold">Website</span>
+                  <span className="text-xs leading-relaxed text-muted-foreground">
+                    A chat bubble for your site — collect visitor info before
+                    the chat, then let AI take over.
+                  </span>
+                  <span className="mt-1 flex flex-wrap gap-1">
+                    <Badge variant="outline" className="text-[10px]">Pre-chat form</Badge>
+                    <Badge variant="outline" className="text-[10px]">Menu</Badge>
+                    <Badge variant="outline" className="text-[10px]">Embed code</Badge>
+                  </span>
+                </button>
+              </div>
+            </>
+          )}
+
+          {wizStep === 1 && wizDraft && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {wizChannel === 'whatsapp' ? (
+                    <MessageCircle className="h-5 w-5 text-[#128C7E]" />
+                  ) : (
+                    <Globe className="h-5 w-5 text-violet-500" />
+                  )}
+                  {wizChannel === 'whatsapp'
+                    ? 'New WhatsApp agent'
+                    : 'New website agent'}{' '}
+                  <span className="text-xs font-normal text-muted-foreground">
+                    step 2 of 3 · identity
+                  </span>
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="wz-name">Name *</Label>
+                  <Input
+                    id="wz-name"
+                    value={wizDraft.name}
+                    onChange={(e) =>
+                      setWizDraft({ ...wizDraft, name: e.target.value })
+                    }
+                    placeholder={
+                      wizChannel === 'whatsapp'
+                        ? 'e.g. WhatsApp Sales Assistant'
+                        : 'e.g. Website Support Bot'
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wz-desc">Description (internal)</Label>
+                  <Input
+                    id="wz-desc"
+                    value={wizDraft.description ?? ''}
+                    onChange={(e) =>
+                      setWizDraft({ ...wizDraft, description: e.target.value })
+                    }
+                    placeholder="What is this agent for?"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label>Provider &amp; model</Label>
+                    <Select
+                      value={`${wizDraft.model_provider}:${wizDraft.model}`}
+                      onValueChange={(v) => {
+                        const val =
+                          v ?? `${wizDraft.model_provider}:${wizDraft.model}`;
+                        const [provider, ...rest] = val.split(':');
+                        setWizDraft({
+                          ...wizDraft,
+                          model_provider: provider as Agent['model_provider'],
+                          model: rest.join(':'),
+                        });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="gemini:gemini-2.5-flash">Google · Gemini 2.5 Flash</SelectItem>
+                        <SelectItem value="gemini:gemini-2.5-pro">Google · Gemini 2.5 Pro</SelectItem>
+                        <SelectItem value="openai:gpt-4o-mini">OpenAI · GPT-4o mini</SelectItem>
+                        <SelectItem value="openai:gpt-4o">OpenAI · GPT-4o</SelectItem>
+                        <SelectItem value="anthropic:claude-sonnet-4-6">Anthropic · Claude Sonnet 4.6</SelectItem>
+                        <SelectItem value="anthropic:claude-3-5-haiku-latest">Anthropic · Claude Haiku</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="wz-temp">Temperature</Label>
+                    <Input
+                      id="wz-temp"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      value={wizDraft.temperature}
+                      onChange={(e) =>
+                        setWizDraft({
+                          ...wizDraft,
+                          temperature: Number(e.target.value),
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wz-prompt">System prompt *</Label>
+                  <Textarea
+                    id="wz-prompt"
+                    className="min-h-[150px] font-mono text-xs"
+                    value={wizDraft.system_prompt}
+                    onChange={(e) =>
+                      setWizDraft({ ...wizDraft, system_prompt: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wz-akey">
+                    API key (optional — falls back to account key)
+                  </Label>
+                  <Input
+                    id="wz-akey"
+                    type="password"
+                    placeholder="AIza… / sk-… / sk-ant-…"
+                    value={wizApiKey}
+                    onChange={(e) => setWizApiKey(e.target.value)}
+                  />
+                </div>
+              </div>
+              <DialogFooter className="mt-2">
+                <Button variant="ghost" onClick={() => setWizStep(0)}>
+                  Back
+                </Button>
+                <Button onClick={() => setWizStep(2)}>
+                  Next: {wizChannel === 'whatsapp' ? 'WhatsApp' : 'Website'} setup →
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+
+          {wizStep === 2 && wizDraft && wizChannel === 'whatsapp' && (
+            <WhatsAppSetupSection
+              draft={wizDraft}
+              setDraft={setWizDraft}
+              agentId={null}
+              footer={
+                <DialogFooter className="mt-2">
+                  <Button variant="ghost" onClick={() => setWizStep(1)}>
+                    Back
+                  </Button>
+                  <Button onClick={createFromWizard} disabled={saving}>
+                    {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Create WhatsApp agent
+                  </Button>
+                </DialogFooter>
+              }
+            />
+          )}
+
+          {wizStep === 2 && wizDraft && wizChannel === 'website' && (
+            <WebsiteSetupSection
+              draft={wizDraft}
+              setDraft={setWizDraft}
+              footer={
+                <DialogFooter className="mt-2">
+                  <Button variant="ghost" onClick={() => setWizStep(1)}>
+                    Back
+                  </Button>
+                  <Button onClick={createFromWizard} disabled={saving}>
+                    {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Create website agent
+                  </Button>
+                </DialogFooter>
+              }
+            />
+          )}
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </DialogContent>
+      </Dialog>
+
       {/* ---------------- Edit dialog ---------------- */}
       <Dialog open={!!draft} onOpenChange={(o) => !o && close()}>
         <DialogContent className="max-h-[94vh] w-full max-w-5xl overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bot className="h-5 w-5 text-primary" />
-              {editingId ? `Edit — ${draft?.name}` : 'Create a new agent'}
+              {editingId ? `Edit — ${draft?.name}` : 'Edit agent'}
             </DialogTitle>
           </DialogHeader>
 
@@ -798,7 +934,9 @@ export default function AgentsBuilderPage() {
                   <Input
                     id="ag-desc"
                     value={draft.description ?? ''}
-                    onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                    onChange={(e) =>
+                      setDraft({ ...draft, description: e.target.value })
+                    }
                     placeholder="What is this agent for?"
                   />
                 </div>
@@ -837,7 +975,9 @@ export default function AgentsBuilderPage() {
                       max={1}
                       step={0.1}
                       value={draft.temperature}
-                      onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
+                      onChange={(e) =>
+                        setDraft({ ...draft, temperature: Number(e.target.value) })
+                      }
                     />
                   </div>
                 </div>
@@ -847,12 +987,17 @@ export default function AgentsBuilderPage() {
                     id="ag-prompt"
                     className="min-h-[180px] font-mono text-xs"
                     value={draft.system_prompt}
-                    onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })}
+                    onChange={(e) =>
+                      setDraft({ ...draft, system_prompt: e.target.value })
+                    }
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="ag-akey">
-                    API key {hasKey && editingId ? '(saved — leave blank to keep)' : '(optional — falls back to account key)'}
+                    API key{' '}
+                    {hasKey && editingId
+                      ? '(saved — leave blank to keep)'
+                      : '(optional — falls back to account key)'}
                   </Label>
                   <Input
                     id="ag-akey"
@@ -862,182 +1007,84 @@ export default function AgentsBuilderPage() {
                     onChange={(e) => setApiKeyInput(e.target.value)}
                   />
                 </div>
-              </div>
-
-              {/* Column 2 — tools + channels */}
-              <div className="space-y-5">
-                <div className="space-y-2">
-                  <Label>Tools</Label>
-                  {TOOL_OPTIONS.map((tool) => (
-                    <label
-                      key={tool.id}
-                      className="flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors hover:bg-muted/50"
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-1"
-                        checked={draft.tools.some((t) => typeof t === 'string' && t === tool.id)}
-                        onChange={() => toggleTool(tool.id)}
-                      />
-                      <tool.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                      <div>
-                        <p className="text-sm font-medium">{tool.label}</p>
-                        <p className="text-xs text-muted-foreground">{tool.desc}</p>
-                      </div>
-                    </label>
-                  ))}
-
-                  {/* Custom tools */}
-                  {draft.tools.filter((t) => typeof t !== 'string').map((t, i) => {
-                    const tool = t as CustomTool;
-                    return (
-                      <div key={`ct-${i}`} className="flex items-start gap-3 rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3">
-                        <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium">{tool.name}</p>
-                          <p className="text-xs text-muted-foreground">{tool.description}</p>
-                        </div>
-                        <button
-                          type="button"
-                          className="text-muted-foreground hover:text-destructive"
-                          onClick={() => setDraft({ ...draft, tools: draft.tools.filter((_, j) => j !== draft.tools.indexOf(tool)) })}
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
-                      </div>
-                    );
-                  })}
-
-                  {!showToolForm ? (
-                    <Button variant="outline" size="sm" className="w-full" onClick={() => setShowToolForm(true)}>
-                      <Plus className="mr-2 h-3.5 w-3.5" /> Create a tool
-                    </Button>
-                  ) : (
-                    <div className="space-y-3 rounded-xl border p-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="tool-name">Tool name</Label>
-                        <Input
-                          id="tool-name"
-                          value={newToolName}
-                          onChange={(e) => setNewToolName(e.target.value)}
-                          placeholder="e.g. Check loan status"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="tool-desc">What it does (shown to the model)</Label>
-                        <Textarea
-                          id="tool-desc"
-                          rows={2}
-                          value={newToolDesc}
-                          onChange={(e) => setNewToolDesc(e.target.value)}
-                          placeholder="Describe when the agent should use this capability…"
-                        />
-                      </div>
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" size="sm" onClick={() => { setShowToolForm(false); setNewToolName(''); setNewToolDesc(''); }}>
-                          Cancel
-                        </Button>
-                        <Button size="sm" onClick={addCustomTool} disabled={!newToolName.trim()}>
-                          Add tool
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="space-y-4 rounded-xl border p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="flex items-center gap-2 text-sm font-medium">
-                        <Globe className="h-4 w-4 text-primary" /> Website widget
-                      </p>
-                      <p className="text-xs text-muted-foreground">Chat bubble on your site → inbox.</p>
-                    </div>
-                    <Switch
-                      checked={draft.website_enabled}
-                      onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
-                    />
-                  </div>
-                  {draft.website_enabled && (
-                    <div className="space-y-3 border-t pt-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="ag-wtitle">Widget title</Label>
-                        <Input
-                          id="ag-wtitle"
-                          value={draft.widget_title}
-                          onChange={(e) => setDraft({ ...draft, widget_title: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="ag-welcome">Welcome message</Label>
-                        <Textarea
-                          id="ag-welcome"
-                          rows={2}
-                          value={draft.widget_welcome_message}
-                          onChange={(e) => setDraft({ ...draft, widget_welcome_message: e.target.value })}
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-2">
-                          <Label>Accent color</Label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              className="h-9 w-12 cursor-pointer rounded-md border"
-                              value={draft.widget_primary_color}
-                              onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
-                            />
-                            <Input
-                              value={draft.widget_primary_color}
-                              onChange={(e) => setDraft({ ...draft, widget_primary_color: e.target.value })}
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Position</Label>
-                          <Select
-                            value={draft.widget_position}
-                            onValueChange={(v) => setDraft({ ...draft, widget_position: (v ?? 'right') as 'left' | 'right' })}
-                          >
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="right">Bottom right</SelectItem>
-                              <SelectItem value="left">Bottom left</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Pre-chat flow */}
-                <PreChatEditor
-                  config={draft.pre_chat_config}
-                  onChange={(pc) => setDraft({ ...draft, pre_chat_config: pc })}
-                />
-
-                <div className="flex items-center justify-between rounded-xl border p-4">
-                  <div>
-                    <p className="text-sm font-medium">WhatsApp auto-reply</p>
-                    <p className="text-xs text-muted-foreground">Agent answers bound numbers automatically.</p>
-                  </div>
-                  <Switch
-                    checked={draft.auto_reply_enabled}
-                    onCheckedChange={(v) => setDraft({ ...draft, auto_reply_enabled: v })}
-                  />
-                </div>
-
                 <div className="flex items-center justify-between rounded-xl border p-4">
                   <div>
                     <p className="text-sm font-medium">Agent active</p>
-                    <p className="text-xs text-muted-foreground">Paused agents stop replying everywhere.</p>
+                    <p className="text-xs text-muted-foreground">
+                      Paused agents stop replying everywhere.
+                    </p>
                   </div>
                   <Switch
                     checked={draft.is_active}
                     onCheckedChange={(v) => setDraft({ ...draft, is_active: v })}
                   />
                 </div>
+              </div>
+
+              {/* Column 2 — channel-specific behavior */}
+              <div className="space-y-5">
+                {(channelOf(draft as Agent) === 'whatsapp') && (
+                  <>
+                    <ToolsBlock
+                      draft={draft}
+                      setDraft={setDraft}
+                      toggleTool={toggleTool}
+                      addCustomTool={addCustomTool}
+                      newToolName={newToolName}
+                      setNewToolName={setNewToolName}
+                      newToolDesc={newToolDesc}
+                      setNewToolDesc={setNewToolDesc}
+                      showToolForm={showToolForm}
+                      setShowToolForm={setShowToolForm}
+                    />
+                    <WhatsAppSetupSection
+                      draft={draft}
+                      setDraft={setDraft}
+                      agentId={editingId}
+                    />
+                  </>
+                )}
+                {(channelOf(draft as Agent) === 'website') && (
+                  <>
+                    <ToolsBlock
+                      draft={draft}
+                      setDraft={setDraft}
+                      toggleTool={toggleTool}
+                      addCustomTool={addCustomTool}
+                      newToolName={newToolName}
+                      setNewToolName={setNewToolName}
+                      newToolDesc={newToolDesc}
+                      setNewToolDesc={setNewToolDesc}
+                      showToolForm={showToolForm}
+                      setShowToolForm={setShowToolForm}
+                    />
+                    <WebsiteSetupSection draft={draft} setDraft={setDraft} embedded />
+                  </>
+                )}
+                {/* Legacy 'both' agents get both sections */}
+                {channelOf(draft as Agent) === 'both' && (
+                  <>
+                    <ToolsBlock
+                      draft={draft}
+                      setDraft={setDraft}
+                      toggleTool={toggleTool}
+                      addCustomTool={addCustomTool}
+                      newToolName={newToolName}
+                      setNewToolName={setNewToolName}
+                      newToolDesc={newToolDesc}
+                      setNewToolDesc={setNewToolDesc}
+                      showToolForm={showToolForm}
+                      setShowToolForm={setShowToolForm}
+                    />
+                    <WhatsAppSetupSection
+                      draft={draft}
+                      setDraft={setDraft}
+                      agentId={editingId}
+                      legacy
+                    />
+                    <WebsiteSetupSection draft={draft} setDraft={setDraft} embedded />
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1048,7 +1095,7 @@ export default function AgentsBuilderPage() {
             <Button variant="outline" onClick={close}>Cancel</Button>
             <Button onClick={save} disabled={saving}>
               {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {editingId ? 'Save changes' : 'Create agent'}
+              Save changes
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1058,41 +1105,669 @@ export default function AgentsBuilderPage() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Tools block (shared)                                                */
+/* ------------------------------------------------------------------ */
+
+function ToolsBlock(props: {
+  draft: Omit<Agent, 'id'>;
+  setDraft: (d: Omit<Agent, 'id'>) => void;
+  toggleTool: (id: string) => void;
+  addCustomTool: () => void;
+  newToolName: string;
+  setNewToolName: (v: string) => void;
+  newToolDesc: string;
+  setNewToolDesc: (v: string) => void;
+  showToolForm: boolean;
+  setShowToolForm: (v: boolean) => void;
+}) {
+  const {
+    draft,
+    setDraft,
+    toggleTool,
+    addCustomTool,
+    newToolName,
+    setNewToolName,
+    newToolDesc,
+    setNewToolDesc,
+    showToolForm,
+    setShowToolForm,
+  } = props;
+  return (
+    <div className="space-y-2">
+      <Label>Tools</Label>
+      {TOOL_OPTIONS.map((tool) => (
+        <label
+          key={tool.id}
+          className="flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors hover:bg-muted/50"
+        >
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={draft.tools.some(
+              (t) => typeof t === 'string' && t === tool.id,
+            )}
+            onChange={() => toggleTool(tool.id)}
+          />
+          <tool.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <div>
+            <p className="text-sm font-medium">{tool.label}</p>
+            <p className="text-xs text-muted-foreground">{tool.desc}</p>
+          </div>
+        </label>
+      ))}
+
+      {/* Custom tools */}
+      {draft.tools.filter((t) => typeof t !== 'string').map((t, i) => {
+        const tool = t as CustomTool;
+        return (
+          <div
+            key={`ct-${i}`}
+            className="flex items-start gap-3 rounded-xl border border-dashed border-primary/40 bg-primary/5 p-3"
+          >
+            <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{tool.name}</p>
+              <p className="text-xs text-muted-foreground">{tool.description}</p>
+            </div>
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-destructive"
+              onClick={() => removeCustomTool(draft, tool, setDraft)}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        );
+      })}
+
+      {!showToolForm ? (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={() => setShowToolForm(true)}
+        >
+          <Plus className="mr-2 h-3.5 w-3.5" /> Create a tool
+        </Button>
+      ) : (
+        <div className="space-y-3 rounded-xl border p-3">
+          <div className="space-y-2">
+            <Label htmlFor="tool-name">Tool name</Label>
+            <Input
+              id="tool-name"
+              value={newToolName}
+              onChange={(e) => setNewToolName(e.target.value)}
+              placeholder="e.g. Check loan status"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tool-desc">What it does (shown to the model)</Label>
+            <Textarea
+              id="tool-desc"
+              rows={2}
+              value={newToolDesc}
+              onChange={(e) => setNewToolDesc(e.target.value)}
+              placeholder="Describe when the agent should use this capability…"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setShowToolForm(false);
+                setNewToolName('');
+                setNewToolDesc('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" onClick={addCustomTool} disabled={!newToolName.trim()}>
+              Add tool
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Remove a custom tool while keeping built-in order stable. */
+function removeCustomTool(
+  draft: Omit<Agent, 'id'>,
+  tool: CustomTool,
+  setDraft: (d: Omit<Agent, 'id'>) => void,
+) {
+  setDraft({
+    ...draft,
+    tools: draft.tools.filter((t) => !(typeof t !== 'string' && t === tool)),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* WHATSAPP section — greeting, response mode, quick replies, flows    */
+/* ------------------------------------------------------------------ */
+
+function WhatsAppSetupSection({
+  draft,
+  setDraft,
+  agentId,
+  footer,
+  legacy,
+}: {
+  draft: Omit<Agent, 'id'>;
+  setDraft: (d: Omit<Agent, 'id'>) => void;
+  /** Agent being edited — null during wizard step 2 (not yet created). */
+  agentId: string | null;
+  footer?: React.ReactNode;
+  /** Legacy 'both' agent — flows attach only when bound; show hint. */
+  legacy?: boolean;
+}) {
+  const wa: Partial<WaConfig> = draft.wa_config ?? {};
+  const mode = wa.response_mode ?? 'flows_then_ai';
+  const quickReplies: WaQuickReply[] = (wa.quick_replies ?? []).map((q) => ({
+    label: q,
+  }));
+
+  const [flows, setFlows] = useState<FlowRowLite[]>([]);
+  const [loadingFlows, setLoadingFlows] = useState(true);
+  const [linking, setLinking] = useState<string | null>(null);
+  const [newQr, setNewQr] = useState('');
+
+  useEffect(() => {
+    setLoadingFlows(true);
+    fetch('/api/flows')
+      .then((r) => r.json())
+      .then((d) => setFlows(Array.isArray(d.flows) ? d.flows : []))
+      .catch(() => setFlows([]))
+      .finally(() => setLoadingFlows(false));
+  }, []);
+
+  const setWa = (patch: Partial<WaConfig>) =>
+    setDraft({ ...draft, wa_config: { ...wa, ...patch } });
+
+  const linkFlow = async (flowId: string | null) => {
+    if (!agentId) return;
+    setLinking(flowId ?? '__none__');
+    try {
+      const res = await fetch(`/api/flows/${flowId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: agentId }),
+      });
+      if (!res.ok) throw new Error('Link failed');
+      const d = await res.json();
+      setFlows((prev) =>
+        prev.map((f) =>
+          f.id === flowId
+            ? { ...f, agent_id: (d.flow?.agent_id as string) ?? agentId }
+            : f,
+        ),
+      );
+    } catch {
+      /* toast-less silent fail mirrors rest of builder */
+    } finally {
+      setLinking(null);
+    }
+  };
+
+  const unlinkFlow = async (flowId: string) => {
+    setLinking(flowId);
+    try {
+      const res = await fetch(`/api/flows/${flowId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: null }),
+      });
+      if (!res.ok) throw new Error('Unlink failed');
+      setFlows((prev) =>
+        prev.map((f) => (f.id === flowId ? { ...f, agent_id: null } : f)),
+      );
+    } catch {
+      /* noop */
+    } finally {
+      setLinking(null);
+    }
+  };
+
+  const addQr = () => {
+    const v = newQr.trim();
+    if (!v) return;
+    setWa({
+      quick_replies: [...quickReplies.map((q) => q.label), v].slice(0, 10),
+    });
+    setNewQr('');
+  };
+  const removeQr = (idx: number) =>
+    setWa({
+      quick_replies: quickReplies
+        .filter((_, i) => i !== idx)
+        .map((q) => q.label),
+    });
+
+  const myFlows = agentId
+    ? flows.filter((f) => f.agent_id === agentId)
+    : [];
+  const availableFlows = flows.filter((f) => !f.agent_id);
+
+  return (
+    <div className="space-y-4 rounded-xl border p-4">
+      <div className="flex items-center gap-2">
+        <Smartphone className="h-4 w-4 text-[#128C7E]" />
+        <p className="text-sm font-semibold">WhatsApp setup</p>
+        {legacy && (
+          <Badge variant="outline" className="ml-auto text-[10px]">
+            Legacy dual-channel
+          </Badge>
+        )}
+      </div>
+
+      {/* Greeting */}
+      <div className="space-y-2">
+        <Label htmlFor="wa-greet">Greeting (first message)</Label>
+        <Textarea
+          id="wa-greet"
+          rows={2}
+          value={wa.greeting ?? ''}
+          onChange={(e) => setWa({ greeting: e.target.value })}
+          placeholder="Sent when the conversation starts…"
+        />
+      </div>
+
+      {/* Response mode */}
+      <div className="space-y-2">
+        <Label>How should it respond?</Label>
+        <div className="grid gap-2">
+          {[
+            {
+              value: 'flows_then_ai',
+              icon: Zap,
+              title: 'Flows first, then AI (recommended)',
+              desc: 'Attached flows answer with buttons/menus; anything else goes to the AI.',
+            },
+            {
+              value: 'ai_only',
+              icon: Bot,
+              title: 'AI only',
+              desc: 'Free conversation — flows never fire on this number.',
+            },
+            {
+              value: 'flows_only',
+              icon: Workflow,
+              title: 'Flows only',
+              desc: 'Deterministic menus only; unmatched messages are ignored.',
+            },
+          ].map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${
+                mode === opt.value
+                  ? 'border-primary bg-primary/5'
+                  : 'hover:bg-muted/50'
+              }`}
+            >
+              <input
+                type="radio"
+                name="wa-response-mode"
+                className="mt-1"
+                checked={mode === opt.value}
+                onChange={() => setWa({ response_mode: opt.value as WaConfig['response_mode'] })}
+              />
+              <opt.icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <div>
+                <p className="text-sm font-medium">{opt.title}</p>
+                <p className="text-xs text-muted-foreground">{opt.desc}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Quick replies */}
+      <div className="space-y-2">
+        <Label>Quick replies (suggested chips)</Label>
+        <p className="text-xs text-muted-foreground">
+          Shown above the composer in the live preview and offered to the AI as
+          suggestions. Up to 10.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {quickReplies.map((q, i) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2.5 py-1 text-xs"
+            >
+              {q.label}
+              <button
+                type="button"
+                onClick={() => removeQr(i)}
+                className="text-muted-foreground hover:text-destructive"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <Input
+            value={newQr}
+            onChange={(e) => setNewQr(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addQr()}
+            placeholder='e.g. "Check my balance"'
+            className="h-8 text-xs"
+          />
+          <Button variant="outline" size="sm" onClick={addQr} disabled={!newQr.trim()}>
+            <Plus className="mr-1 h-3.5 w-3.5" /> Add
+          </Button>
+        </div>
+      </div>
+
+      {/* Flows attachment */}
+      <div className="space-y-2 border-t pt-3">
+        <div className="flex items-center gap-2">
+          <Workflow className="h-4 w-4 text-primary" />
+          <p className="text-sm font-semibold">Attached flows</p>
+          <span className="ml-auto text-[11px] text-muted-foreground">
+            {myFlows.length} attached
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          WhatsApp flows built in <strong>Flows</strong> — buttons, lists,
+          questions — that this agent runs before falling back to AI.
+          {legacy &&
+            ' Legacy agents run all account flows; attach flows here to scope them.'}
+        </p>
+        {loadingFlows ? (
+          <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading flows…
+          </div>
+        ) : (
+          <>
+            <div className="space-y-1.5">
+              {myFlows.map((f) => (
+                <div
+                  key={f.id}
+                  className="flex items-center gap-2 rounded-lg border bg-primary/5 px-3 py-2"
+                >
+                  <Workflow className="h-3.5 w-3.5 text-primary" />
+                  <span className="flex-1 truncate text-xs font-medium">
+                    {f.name}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] ${
+                      f.status === 'active'
+                        ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
+                        : ''
+                    }`}
+                  >
+                    {f.status}
+                  </Badge>
+                  <button
+                    type="button"
+                    title="Detach flow"
+                    onClick={() => unlinkFlow(f.id)}
+                    disabled={linking === f.id}
+                    className="text-muted-foreground hover:text-destructive"
+                  >
+                    {linking === f.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Unlink className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                </div>
+              ))}
+              {myFlows.length === 0 && (
+                <p className="rounded-lg border border-dashed p-2.5 text-center text-xs text-muted-foreground">
+                  No flows attached yet.
+                </p>
+              )}
+            </div>
+            {availableFlows.length > 0 && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Available flows
+                </p>
+                {availableFlows.slice(0, 6).map((f) => (
+                  <div
+                    key={f.id}
+                    className="flex items-center gap-2 rounded-lg border px-3 py-2"
+                  >
+                    <Workflow className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="flex-1 truncate text-xs">{f.name}</span>
+                    <Badge variant="outline" className="text-[9px]">
+                      {f.status}
+                    </Badge>
+                    <button
+                      type="button"
+                      title="Attach to this agent"
+                      onClick={() => linkFlow(f.id)}
+                      disabled={linking === f.id}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                    >
+                      {linking === f.id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Link2 className="h-3.5 w-3.5" />
+                      )}
+                      Attach
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              Need a new flow? Open <strong>Flows</strong> in the sidebar, build
+              it, then attach it here.
+            </p>
+          </>
+        )}
+      </div>
+
+      {footer}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* WEBSITE section — widget look + pre-chat collection                 */
+/* ------------------------------------------------------------------ */
+
+function WebsiteSetupSection({
+  draft,
+  setDraft,
+  footer,
+  embedded,
+}: {
+  draft: Omit<Agent, 'id'>;
+  setDraft: (d: Omit<Agent, 'id'>) => void;
+  footer?: React.ReactNode;
+  /** True inside the wide edit dialog (pre-chat editor inline). */
+  embedded?: boolean;
+}) {
+  const pc: PreChatConfig = draft.pre_chat_config || { enabled: false };
+  return (
+    <div className="space-y-4 rounded-xl border p-4">
+      <div className="flex items-center gap-2">
+        <Globe className="h-4 w-4 text-violet-500" />
+        <p className="text-sm font-semibold">Website setup</p>
+        {embedded && (
+          <Settings2 className="ml-auto h-4 w-4 text-muted-foreground" />
+        )}
+      </div>
+
+      {/* Widget appearance */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">Chat bubble on your site</p>
+            <p className="text-xs text-muted-foreground">
+              Visitors chat here → inbox.
+            </p>
+          </div>
+          <Switch
+            checked={draft.website_enabled}
+            onCheckedChange={(v) => setDraft({ ...draft, website_enabled: v })}
+          />
+        </div>
+        {draft.website_enabled && (
+          <div className="space-y-3 border-t pt-3">
+            <div className="space-y-2">
+              <Label htmlFor="ag-wtitle">Widget title</Label>
+              <Input
+                id="ag-wtitle"
+                value={draft.widget_title}
+                onChange={(e) =>
+                  setDraft({ ...draft, widget_title: e.target.value })
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="ag-welcome">Welcome message</Label>
+              <Textarea
+                id="ag-wwelcome"
+                rows={2}
+                value={draft.widget_welcome_message}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    widget_welcome_message: e.target.value,
+                  })
+                }
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Accent color</Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    className="h-9 w-12 cursor-pointer rounded-md border"
+                    value={draft.widget_primary_color}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        widget_primary_color: e.target.value,
+                      })
+                    }
+                  />
+                  <Input
+                    value={draft.widget_primary_color}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        widget_primary_color: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Position</Label>
+                <Select
+                  value={draft.widget_position}
+                  onValueChange={(v) =>
+                    setDraft({
+                      ...draft,
+                      widget_position: (v ?? 'right') as 'left' | 'right',
+                    })
+                  }
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="right">Bottom right</SelectItem>
+                    <SelectItem value="left">Bottom left</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Pre-chat flow */}
+      <PreChatEditor
+        config={pc}
+        onChange={(npc) => setDraft({ ...draft, pre_chat_config: npc })}
+      />
+
+      {footer}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Pre-chat flow editor                                                */
 /* ------------------------------------------------------------------ */
 
-function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: (c: PreChatConfig) => void }) {
+function PreChatEditor({
+  config,
+  onChange,
+}: {
+  config: PreChatConfig;
+  onChange: (c: PreChatConfig) => void;
+}) {
   const set = (patch: Partial<PreChatConfig>) => onChange({ ...config, ...patch });
   const tree = config.dialog_tree || { nodes: {}, start_node: '' };
 
   const addNode = () => {
-    const id = 'node_' + Object.keys(tree.nodes).length + '_' + Date.now().toString(36).slice(-3);
-    const nodes = { ...tree.nodes, [id]: { id, message: 'What would you like to do?', options: [{ label: 'Option 1', next: '__ai__' }] } };
+    const id =
+      'node_' + Object.keys(tree.nodes).length + '_' + Date.now().toString(36).slice(-3);
+    const nodes = {
+      ...tree.nodes,
+      [id]: {
+        id,
+        message: 'What would you like to do?',
+        options: [{ label: 'Option 1', next: '__ai__' }],
+      },
+    };
     set({ dialog_tree: { nodes, start_node: tree.start_node || id } });
   };
   const updateNode = (id: string, patch: Partial<PreChatNode>) => {
-    set({ dialog_tree: { ...tree, nodes: { ...tree.nodes, [id]: { ...tree.nodes[id], ...patch } } } });
+    set({
+      dialog_tree: {
+        ...tree,
+        nodes: { ...tree.nodes, [id]: { ...tree.nodes[id], ...patch } },
+      },
+    });
   };
   const removeNode = (id: string) => {
     const nodes = { ...tree.nodes };
     delete nodes[id];
-    // clear references to deleted node
     for (const k of Object.keys(nodes)) {
       const n = nodes[k];
-      if (n.options) nodes[k] = { ...n, options: n.options.map((o) => o.next === id ? { ...o, next: '__ai__' } : o) };
+      if (n.options)
+        nodes[k] = {
+          ...n,
+          options: n.options.map((o) =>
+            o.next === id ? { ...o, next: '__ai__' } : o,
+          ),
+        };
     }
-    set({ dialog_tree: { nodes, start_node: tree.start_node === id ? Object.keys(nodes)[0] || '' : tree.start_node } });
+    set({
+      dialog_tree: {
+        nodes,
+        start_node: tree.start_node === id ? Object.keys(nodes)[0] || '' : tree.start_node,
+      },
+    });
   };
   const addOption = (nodeId: string) => {
     const n = tree.nodes[nodeId];
     if (!n) return;
-    updateNode(nodeId, { options: [...(n.options || []), { label: 'New option', next: '__ai__' }] });
+    updateNode(nodeId, {
+      options: [...(n.options || []), { label: 'New option', next: '__ai__' }],
+    });
   };
-  const updateOption = (nodeId: string, idx: number, patch: Partial<PreChatOption>) => {
+  const updateOption = (
+    nodeId: string,
+    idx: number,
+    patch: Partial<PreChatOption>,
+  ) => {
     const n = tree.nodes[nodeId];
     if (!n || !n.options) return;
-    const opts = n.options.map((o, i) => (i === idx ? { ...o, ...patch } : o));
-    updateNode(nodeId, { options: opts });
+    updateNode(nodeId, {
+      options: n.options.map((o, i) => (i === idx ? { ...o, ...patch } : o)),
+    });
   };
   const removeOption = (nodeId: string, idx: number) => {
     const n = tree.nodes[nodeId];
@@ -1105,9 +1780,12 @@ function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: 
       <div className="flex items-center justify-between">
         <div>
           <p className="flex items-center gap-2 text-sm font-medium">
-            <MessageSquare className="h-4 w-4 text-primary" /> Pre-chat flow
+            <MessageSquare className="h-4 w-4 text-primary" /> Collect info
+            before the chat
           </p>
-          <p className="text-xs text-muted-foreground">Collect info + guide visitors before AI chat.</p>
+          <p className="text-xs text-muted-foreground">
+            Form + guided menu shown before AI takes over.
+          </p>
         </div>
         <Switch checked={config.enabled} onCheckedChange={(v) => set({ enabled: v })} />
       </div>
@@ -1116,14 +1794,23 @@ function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: 
         <div className="space-y-4 border-t pt-3">
           {/* Collect info */}
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Collect info before chat</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Ask for
+            </p>
             <div className="grid grid-cols-2 gap-2">
               {(['name', 'email', 'phone', 'company'] as const).map((field) => (
                 <label key={field} className="flex items-center gap-2 text-xs">
                   <input
                     type="checkbox"
                     checked={!!config.collect_info?.[field]}
-                    onChange={(e) => set({ collect_info: { ...(config.collect_info || {}), [field]: e.target.checked } })}
+                    onChange={(e) =>
+                      set({
+                        collect_info: {
+                          ...(config.collect_info || {}),
+                          [field]: e.target.checked,
+                        },
+                      })
+                    }
                     className="rounded"
                   />
                   <span className="capitalize">{field}</span>
@@ -1158,16 +1845,21 @@ function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                <Hash className="mr-1 inline h-3 w-3" />Dialog tree
+                <Hash className="mr-1 inline h-3 w-3" />
+                Menu options (dialog tree)
               </p>
-              <button onClick={addNode} className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+              <button
+                onClick={addNode}
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
                 <Plus className="h-3 w-3" /> Add node
               </button>
             </div>
 
             {Object.keys(tree.nodes).length === 0 && (
               <p className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">
-                No nodes yet. Add a node to build a guided menu (e.g. "Loans → Personal/Business → AI").
+                No nodes yet. Add a node to build a guided menu (e.g. "Loans →
+                Personal/Business → AI").
               </p>
             )}
 
@@ -1177,21 +1869,30 @@ function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: 
                   <div className="mb-2 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       {tree.start_node === id && (
-                        <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">START</span>
+                        <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
+                          START
+                        </span>
                       )}
-                      <span className="text-xs font-mono text-muted-foreground">{id}</span>
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {id}
+                      </span>
                     </div>
                     <div className="flex items-center gap-1">
                       {tree.start_node !== id && (
                         <button
-                          onClick={() => set({ dialog_tree: { ...tree, start_node: id } })}
+                          onClick={() =>
+                            set({ dialog_tree: { ...tree, start_node: id } })
+                          }
                           className="rounded px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/10"
                           title="Set as start node"
                         >
                           <ArrowDown className="h-3 w-3" />
                         </button>
                       )}
-                      <button onClick={() => removeNode(id)} className="rounded px-1 py-0.5 text-muted-foreground hover:text-red-500">
+                      <button
+                        onClick={() => removeNode(id)}
+                        className="rounded px-1 py-0.5 text-muted-foreground hover:text-red-500"
+                      >
                         <Trash2 className="h-3 w-3" />
                       </button>
                     </div>
@@ -1211,25 +1912,37 @@ function PreChatEditor({ config, onChange }: { config: PreChatConfig; onChange: 
                           className="flex-1 rounded border bg-background px-2 py-1 text-[11px]"
                           value={opt.label}
                           placeholder="Button label..."
-                          onChange={(e) => updateOption(id, idx, { label: e.target.value })}
+                          onChange={(e) =>
+                            updateOption(id, idx, { label: e.target.value })
+                          }
                         />
                         <select
                           className="rounded border bg-background px-1 py-1 text-[11px]"
                           value={opt.next}
-                          onChange={(e) => updateOption(id, idx, { next: e.target.value })}
+                          onChange={(e) =>
+                            updateOption(id, idx, { next: e.target.value })
+                          }
                         >
                           <option value="__ai__">→ AI chat</option>
                           {Object.keys(tree.nodes).map((nid) => (
-                            <option key={nid} value={nid}>→ {nid}</option>
+                            <option key={nid} value={nid}>
+                              → {nid}
+                            </option>
                           ))}
                         </select>
-                        <button onClick={() => removeOption(id, idx)} className="text-muted-foreground hover:text-red-500">
+                        <button
+                          onClick={() => removeOption(id, idx)}
+                          className="text-muted-foreground hover:text-red-500"
+                        >
                           <X className="h-3 w-3" />
                         </button>
                       </div>
                     ))}
                   </div>
-                  <button onClick={() => addOption(id)} className="mt-2 inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+                  <button
+                    onClick={() => addOption(id)}
+                    className="mt-2 inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+                  >
                     <Plus className="h-3 w-3" /> Add option
                   </button>
                 </div>

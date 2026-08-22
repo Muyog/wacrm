@@ -35,10 +35,14 @@ export interface AgentRow {
   widget_position: 'left' | 'right'
   is_active: boolean
   pre_chat_config: Record<string, unknown>
+  /** Channel this agent is scoped to. Legacy agents default to 'both'. */
+  channel: 'whatsapp' | 'website' | 'both'
+  /** WhatsApp-specific agent settings (greeting, response mode, quick replies). */
+  wa_config: Record<string, unknown>
 }
 
 export const AGENT_COLUMNS =
-  'id, account_id, name, description, avatar_url, system_prompt, model_provider, model, temperature, max_tokens, tools, auto_reply_enabled, website_enabled, widget_token, widget_title, widget_welcome_message, widget_primary_color, widget_position, is_active, pre_chat_config'
+  'id, account_id, name, description, avatar_url, system_prompt, model_provider, model, temperature, max_tokens, tools, auto_reply_enabled, website_enabled, widget_token, widget_title, widget_welcome_message, widget_primary_color, widget_position, is_active, pre_chat_config, channel, wa_config'
 
 export async function loadAgent(
   db: SupabaseClient,

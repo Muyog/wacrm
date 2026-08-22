@@ -78,6 +78,8 @@ interface PutBody {
   trigger_config?: Record<string, unknown>
   entry_node_id?: string | null
   fallback_policy?: Record<string, unknown>
+  /** Bind this flow to a WhatsApp agent (null = unassigned/global). */
+  agent_id?: string | null
   nodes?: Array<{
     node_key: string
     node_type: string
@@ -134,6 +136,9 @@ export async function PUT(
     flowPatch.entry_node_id = body.entry_node_id
   if (body.fallback_policy !== undefined)
     flowPatch.fallback_policy = body.fallback_policy
+  if (body.agent_id !== undefined)
+    flowPatch.agent_id =
+      body.agent_id === null || body.agent_id === '' ? null : body.agent_id
 
   const { error: updErr } = await admin
     .from('flows')
