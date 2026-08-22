@@ -112,8 +112,16 @@ interface SimulateStep {
   header?: string;
   footer?: string;
   button_label?: string;
-  buttons?: { title: string }[];
-  rows?: { title: string; description?: string }[];
+  buttons?: { title: string; next?: string }[];
+  rows?: { title: string; description?: string; next?: string }[];
+  /** Free-text resume node (collect_input prompts). */
+  resume?: string;
+}
+
+interface FlowCursor {
+  flowId: string;
+  flowName: string;
+  nodeKey?: string;
 }
 
 type WaBubble =
@@ -141,6 +149,10 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
     agent.wa_config?.quick_replies ?? [],
   );
   const bodyRef = useRef<HTMLDivElement>(null);
+  /* Simulation position: which flow we're inside and what node resumes
+     after the customer's next answer. */
+  const cursorRef = useRef<FlowCursor>(null);
+  const pendingResumeRef = useRef<string | null>(null);
   // Bumped when the agent's config changes → restarts the conversation.
   const [runKey, setRunKey] = useState(0);
 
@@ -162,24 +174,45 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
     async (
       history: { role: 'user' | 'assistant'; content: string }[],
       append: (b: WaBubble[]) => void,
+      opts?: { nodeKey?: string },
     ) => {
       if (!agent.id) return;
       setBusy(true);
       try {
+        const payload: Record<string, unknown> = { messages: history };
+        const cur = cursorRef.current;
+        if (opts?.nodeKey && cur) {
+          payload.cursor = {
+            flowId: cur.flowId,
+            flowName: cur.flowName,
+            nodeKey: opts.nodeKey,
+          };
+        }
         const res = await fetch(`/api/agents/${agent.id}/simulate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: history }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json();
         const add: WaBubble[] = [];
         if (data.kind === 'flow') {
+          const steps = (data.steps ?? []) as SimulateStep[];
           add.push({
             role: 'bot',
-            steps: (data.steps ?? []) as SimulateStep[],
+            steps,
             flowName: data.flow_name,
           });
-          if (!data.steps?.length) {
+          /* Track where the customer's next typed answer resumes: only a
+             collect_input prompt suspends for free text. Button/list taps
+             carry their own per-option next node. */
+          const lastPrompt = [...steps]
+            .reverse()
+            .find((s) => s.type === 'text' && s.resume);
+          pendingResumeRef.current = lastPrompt?.resume ?? null;
+          cursorRef.current = data.cursor
+            ? { flowId: data.cursor.flowId, flowName: data.cursor.flowName ?? '' }
+            : null;
+          if (!steps.length) {
             add.push({
               role: 'system',
               text: `Flow "${data.flow_name}" has no entry node yet.`,
@@ -196,6 +229,8 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
           } else if (data.warning) {
             add.push({ role: 'system', text: data.warning });
           }
+          pendingResumeRef.current = null;
+          cursorRef.current = null;
         }
         append(add.length ? add : [{ role: 'system', text: 'No reply.' }]);
       } catch {
@@ -212,6 +247,8 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
     const greeting: WaBubble = { role: 'bot', text: defaultGreeting(agent) };
     setBubbles([greeting]);
     setSuggestions(agent.wa_config?.quick_replies ?? []);
+    pendingResumeRef.current = null;
+    cursorRef.current = null;
     if (!agent.id) return;
     // Kick the flow/AI with the greeting as the opener so a
     // first_inbound_message flow demonstrates immediately.
@@ -234,7 +271,7 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKey]);
 
-  const send = async (raw?: string) => {
+  const send = async (raw?: string, next?: string) => {
     const text = (raw ?? input).trim();
     if (!text || busy) return;
     setInput('');
@@ -253,7 +290,16 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
       history.push({ role: 'user', content: text });
       return [...prev, userBubble];
     });
-    await simulate(history, (add) => setBubbles((b) => [...b, ...add]));
+    /* Mid-flow: a tapped option carries its own next node; a typed answer
+       resumes from the pending collect_input's target. */
+    let nodeKey: string | undefined = next;
+    if (!nodeKey) {
+      nodeKey = pendingResumeRef.current ?? undefined;
+      pendingResumeRef.current = null;
+    }
+    await simulate(history, (add) => setBubbles((b) => [...b, ...add]), {
+      nodeKey,
+    });
   };
 
   const initials = agent.name
@@ -329,7 +375,7 @@ export function WhatsAppPreview({ agent }: { agent: Agent }) {
                   key={i}
                   steps={b.steps}
                   flowName={b.flowName}
-                  onTap={(title) => send(title)}
+                  onTap={(title, optNext) => send(title, optNext)}
                 />
               );
             })}
@@ -397,7 +443,7 @@ function FlowStepsView({
 }: {
   steps: SimulateStep[];
   flowName?: string;
-  onTap: (title: string) => void;
+  onTap: (title: string, optNext?: string) => void;
 }) {
   return (
     <div className="space-y-2">
@@ -432,7 +478,7 @@ function FlowStepsView({
                 {(step.buttons ?? []).map((btn, j) => (
                   <button
                     key={j}
-                    onClick={() => btn.title && onTap(btn.title)}
+                    onClick={() => btn.title && onTap(btn.title, btn.next)}
                     className="rounded-md border border-[#25D366]/60 bg-white px-2.5 py-1 text-[11px] font-semibold text-[#128C7E] shadow-sm transition-colors hover:bg-[#25D366] hover:text-white"
                   >
                     {btn.title || `Button ${j + 1}`}
@@ -450,7 +496,7 @@ function FlowStepsView({
                 {(step.rows ?? []).map((row, j) => (
                   <button
                     key={j}
-                    onClick={() => row.title && onTap(row.title)}
+                    onClick={() => row.title && onTap(row.title, row.next)}
                     className="block w-full px-3 py-1.5 text-left transition-colors hover:bg-muted"
                   >
                     <span className="block text-[12px] font-medium text-gray-900">

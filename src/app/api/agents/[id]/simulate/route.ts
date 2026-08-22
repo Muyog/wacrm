@@ -39,8 +39,14 @@ interface SimulateStep {
   header?: string
   footer?: string
   button_label?: string
-  buttons?: { title: string }[]
-  rows?: { title: string; description?: string }[]
+  /** Each option carries the node the run advances to when tapped. */
+  buttons?: { title: string; next?: string }[]
+  rows?: { title: string; description?: string; next?: string }[]
+  /**
+   * Node to resume from when the customer answers this step with FREE
+   * TEXT (collect_input prompts). Button/list taps use per-option next.
+   */
+  resume?: string
 }
 
 export async function POST(
@@ -59,6 +65,9 @@ export async function POST(
     if (!rawMessages) {
       return NextResponse.json({ error: 'messages is required' }, { status: 400 })
     }
+    const cursor = body?.cursor as
+      | { flowId?: string; flowName?: string; nodeKey?: string }
+      | undefined
     const messages: ChatMessage[] = rawMessages
       .filter(
         (m: unknown): m is ChatMessage =>
@@ -97,6 +106,17 @@ export async function POST(
       waMode !== 'ai_only' &&
       inboundText.trim()
     ) {
+      /* Mid-flow continuation: the preview sends back the cursor from the
+         suspending step (button tap / list row / collect_input answer). */
+      if (cursor?.flowId && cursor.nodeKey) {
+        const steps = await walkFlow(cursor.flowId, cursor.nodeKey)
+        return NextResponse.json({
+          kind: 'flow',
+          flow_name: cursor.flowName ?? undefined,
+          steps,
+          cursor: { flowId: cursor.flowId, flowName: cursor.flowName },
+        })
+      }
       const isFirstInbound =
         messages.filter((m) => m.role === 'user').length === 1
       const flow = await findMatchingFlow(
@@ -111,6 +131,7 @@ export async function POST(
           kind: 'flow',
           flow_name: flow.name,
           steps,
+          cursor: { flowId: flow.flowId, flowName: flow.name },
         })
       }
       if (waMode === 'flows_only') {
@@ -268,9 +289,14 @@ async function walkFlow(
           text: String(cfg.text ?? ''),
           header: cfg.header_text ? String(cfg.header_text) : undefined,
           footer: cfg.footer_text ? String(cfg.footer_text) : undefined,
-          buttons: ((cfg.buttons as { title?: string }[] | undefined) ?? [])
+          buttons: ((cfg.buttons as
+            | { title?: string; next_node_key?: string }[]
+            | undefined) ?? [])
             .slice(0, 3)
-            .map((b) => ({ title: String(b.title ?? '') })),
+            .map((b) => ({
+              title: String(b.title ?? ''),
+              next: b.next_node_key ? String(b.next_node_key) : undefined,
+            })),
         })
         cursor = (cfg.next_node_key as string) ?? null
         break
@@ -303,11 +329,14 @@ async function walkFlow(
         })
         cursor = (cfg.next_node_key as string) ?? null
         break
-      case 'collect_input':
+      case 'collect_input': {
         // Suspending node — the run waits for the customer's next message.
-        steps.push({ type: 'text', text: String(cfg.prompt_text ?? '') })
+        // Hand the preview a resume cursor so a typed answer continues.
+        const after = (cfg.next_node_key as string) ?? ''
+        steps.push({ type: 'text', text: String(cfg.prompt_text ?? ''), resume: after })
         cursor = null
         break
+      }
       case 'condition': {
         // Preview has no stored vars/tags → "present" predicates are
         // false, "absent" predicates true. Same first-touch reality a
