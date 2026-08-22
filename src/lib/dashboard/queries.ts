@@ -400,23 +400,38 @@ export async function loadActivity(db: DB, limit = 20): Promise<ActivityItem[]> 
     .slice(0, limit)
 }
 
-// --- 5. Channel breakdown (donut) -------------------------------------
+// --- 5. Channel + sender breakdown (combined donut card) --------------
+// Both accept a `days` window so they follow the same 7/30/90 filter as
+// the conversations-over-time chart.
 
-export async function loadChannelsDonut(db: DB): Promise<ChannelsDonutData> {
-  const { data, error } = await db.from('conversations').select('channel')
+export async function loadChannelsDonut(
+  db: DB,
+  days: number | null = null,
+): Promise<ChannelsDonutData> {
+  let q = db.from('conversations').select('channel, created_at')
+  if (days) {
+    q = q.gte('created_at', daysAgoStart(days).toISOString())
+  }
+  const { data, error } = await q
   if (error || !data) return { slices: [] }
   const counts: Record<string, number> = {}
-  for (const row of data as { channel: string }[]) {
-    counts[row.channel] = (counts[row.channel] || 0) + 1
+  for (const row of data) {
+    const channel = (row as { channel: string }).channel
+    counts[channel] = (counts[channel] || 0) + 1
   }
   const slices = Object.entries(counts).map(([channel, count]) => ({ channel, count }))
   return { slices }
 }
 
-// --- 6. Messages by sender (donut) ------------------------------------
-
-export async function loadMessagesDonut(db: DB): Promise<MessagesDonutData> {
-  const { data, error } = await db.from('messages').select('sender_type')
+export async function loadMessagesDonut(
+  db: DB,
+  days: number | null = null,
+): Promise<MessagesDonutData> {
+  let q = db.from('messages').select('sender_type, created_at')
+  if (days) {
+    q = q.gte('created_at', daysAgoStart(days).toISOString())
+  }
+  const { data, error } = await q
   if (error || !data) return { slices: [] }
   const labels: Record<string, string> = {
     customer: 'Customers',

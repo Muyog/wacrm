@@ -39,8 +39,7 @@ import { ConversationsChart } from '@/components/dashboard/conversations-chart'
 import { PipelineDonut } from '@/components/dashboard/pipeline-donut'
 import { ResponseTimeChart } from '@/components/dashboard/response-time-chart'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
-import { ChannelsDonut } from '@/components/dashboard/donuts'
-import { MessagesDonut } from '@/components/dashboard/donuts'
+import { DonutsCard } from '@/components/dashboard/donuts-card'
 import { TopicsCloud } from '@/components/dashboard/topics-cloud'
 
 import { useTranslations } from 'next-intl'
@@ -52,10 +51,6 @@ export default function DashboardPage() {
   const { defaultCurrency } = useAuth()
   const [metrics, setMetrics] = useState<MetricsBundle | null>(null)
   const [metricsLoading, setMetricsLoading] = useState(true)
-  const [channels, setChannels] = useState<ChannelsDonutData | null>(null)
-  const [channelsLoading, setChannelsLoading] = useState(true)
-  const [messagesBySender, setMessagesBySender] = useState<MessagesDonutData | null>(null)
-  const [messagesLoading, setMessagesLoading] = useState(true)
   const [topics, setTopics] = useState<TopicsData | null>(null)
   const [topicsLoading, setTopicsLoading] = useState(true)
 
@@ -69,6 +64,22 @@ export default function DashboardPage() {
     90: null,
   })
   const [seriesLoading, setSeriesLoading] = useState(true)
+
+  // Donut pair follows the same range filter as the series chart,
+  // with its own per-range cache (same pattern).
+  const [channelsByRange, setChannelsByRange] = useState<Record<RangeDays, ChannelsDonutData | null>>({
+    7: null,
+    30: null,
+    90: null,
+  })
+  const [messagesByRange, setMessagesByRange] = useState<Record<RangeDays, MessagesDonutData | null>>({
+    7: null,
+    30: null,
+    90: null,
+  })
+  const channels = channelsByRange[range]
+  const messagesBySender = messagesByRange[range]
+  const donutsLoading = channelsByRange[range] === null || messagesByRange[range] === null
 
   const [pipeline, setPipeline] = useState<PipelineDonutData | null>(null)
   const [pipelineLoading, setPipelineLoading] = useState(true)
@@ -113,15 +124,13 @@ export default function DashboardPage() {
       .catch((err) => console.error('[dashboard] activity failed:', err))
       .finally(() => setActivityLoading(false))
 
-    void loadChannelsDonut(db)
-      .then((c) => setChannels(c))
+    void loadChannelsDonut(db, 30)
+      .then((c) => setChannelsByRange((prev) => ({ ...prev, 30: c })))
       .catch((err) => console.error('[dashboard] channels donut failed:', err))
-      .finally(() => setChannelsLoading(false))
 
-    void loadMessagesDonut(db)
-      .then((m) => setMessagesBySender(m))
+    void loadMessagesDonut(db, 30)
+      .then((m) => setMessagesByRange((prev) => ({ ...prev, 30: m })))
       .catch((err) => console.error('[dashboard] messages donut failed:', err))
-      .finally(() => setMessagesLoading(false))
 
     void loadTopics(db)
       .then((t) => setTopics(t))
@@ -140,15 +149,27 @@ export default function DashboardPage() {
   const handleRangeChange = useCallback(
     (r: RangeDays) => {
       setRange(r)
-      if (series[r] !== null) return
-      setSeriesLoading(true)
       const db = createClient()
-      loadConversationsSeries(db, r)
-        .then((s) => setSeries((prev) => ({ ...prev, [r]: s })))
-        .catch((err) => console.error('[dashboard] series failed:', err))
-        .finally(() => setSeriesLoading(false))
+      if (series[r] === null) {
+        setSeriesLoading(true)
+        loadConversationsSeries(db, r)
+          .then((s) => setSeries((prev) => ({ ...prev, [r]: s })))
+          .catch((err) => console.error('[dashboard] series failed:', err))
+          .finally(() => setSeriesLoading(false))
+      }
+      // Donuts follow the same range — fetch when not cached.
+      if (channelsByRange[r] === null) {
+        loadChannelsDonut(db, r)
+          .then((c) => setChannelsByRange((prev) => ({ ...prev, [r]: c })))
+          .catch((err) => console.error('[dashboard] channels donut failed:', err))
+      }
+      if (messagesByRange[r] === null) {
+        loadMessagesDonut(db, r)
+          .then((m) => setMessagesByRange((prev) => ({ ...prev, [r]: m })))
+          .catch((err) => console.error('[dashboard] messages donut failed:', err))
+      }
     },
-    [series],
+    [series, channelsByRange, messagesByRange],
   )
 
   return (
@@ -232,11 +253,22 @@ export default function DashboardPage() {
           />
         </div>
         <div className="h-full lg:col-span-2">
-          {/* Compact pair: channels + messages-by-sender, stacked in the
-              slot next to the line chart (pipeline moved below). */}
-          <div className="grid h-full grid-cols-1 gap-4 sm:grid-cols-2 lg:h-full">
-            <ChannelsDonut data={channels} />
-            <MessagesDonut data={messagesBySender} />
+          {/* Combined card: channels + messages-by-sender in one block,
+              filtered by the same 7/30/90 range as the line chart. */}
+          <div className="h-full">
+            {donutsLoading ? (
+              <section className="flex h-full flex-col rounded-xl border border-border bg-card">
+                <header className="border-b border-border px-5 py-4">
+                  <div className="h-4 w-40 animate-pulse rounded bg-muted" />
+                </header>
+                <div className="flex flex-1 items-center justify-center gap-8 p-6">
+                  <div className="h-24 w-24 animate-pulse rounded-full bg-muted" />
+                  <div className="h-24 w-24 animate-pulse rounded-full bg-muted" />
+                </div>
+              </section>
+            ) : (
+              <DonutsCard channels={channels} messages={messagesBySender} />
+            )}
           </div>
         </div>
       </div>
