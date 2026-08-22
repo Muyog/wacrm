@@ -13,7 +13,15 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
+  MessageSquare,
 } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { useTranslations } from 'next-intl';
@@ -51,6 +59,7 @@ export function WhatsAppConfig() {
     loading: authLoading,
     profileLoading,
     canEditSettings,
+    accountRole,
   } = useAuth();
 
   const [loading, setLoading] = useState(true);
@@ -62,6 +71,9 @@ export function WhatsAppConfig() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
+  /* All connected numbers (multi-number) + WhatsApp agents for binding. */
+  const [numbers, setNumbers] = useState<NumberRowLite[]>([]);
+  const [agents, setAgents] = useState<AgentLite[]>([]);
   // Guards against re-hydrating the form when the load effect below
   // re-runs for reasons unrelated to actually switching accounts —
   // e.g. Supabase's onAuthStateChange fires a token refresh (new
@@ -92,6 +104,9 @@ export function WhatsAppConfig() {
   // Meta will silently drop every inbound event — that's the
   // multi-number bug that prompted this work.
   const isRegistered = Boolean(config?.registered_at);
+  /* Only owners/admins may rebind numbers to agents (matches PATCH role). */
+  const canManage =
+    accountRole === 'owner' || accountRole === 'admin';
   const lastRegistrationError = config?.last_registration_error ?? null;
 
   const [verifyingRegistration, setVerifyingRegistration] = useState(false);
@@ -177,6 +192,36 @@ export function WhatsAppConfig() {
         setConnectionStatus('disconnected');
         setResetReason(null);
         setStatusMessage('');
+      }
+
+      /* Multi-number list + agent bindings (API masks tokens). */
+      try {
+        const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+        const payload = await res.json();
+        const list: NumberRowLite[] = Array.isArray(payload.configs)
+          ? payload.configs
+          : [];
+        setNumbers(list);
+        if (!data && list.length > 0) {
+          // Legacy single-row read found nothing (e.g. row written by a
+          // newer flow) but numbers exist — hydrate the form from the
+          // newest number so the panel isn't a blank slate.
+          setConfig(list[0] as unknown as WhatsAppConfigType);
+          setPhoneNumberId(list[0].phone_number_id || '');
+          setWabaId(list[0].waba_id || '');
+        }
+      } catch {
+        setNumbers([]);
+      }
+      try {
+        const res = await fetch('/api/agents');
+        const payload = await res.json();
+        const all: AgentLite[] = Array.isArray(payload.agents) ? payload.agents : [];
+        // Only WhatsApp-scoped agents can serve a phone number; legacy
+        // 'both' agents keep working too.
+        setAgents(all.filter((a) => a.channel !== 'website'));
+      } catch {
+        setAgents([]);
       }
     } catch (err) {
       console.error('fetchConfig error:', err);
@@ -727,6 +772,18 @@ export function WhatsAppConfig() {
           </CardContent>
         </Card>
 
+        {/* Number → agent binding. Each connected number can be served
+            by a WhatsApp agent (flows + AI). Unassigned numbers fall back
+            to the account-level auto-reply. */}
+        {numbers.length > 0 && (
+          <NumberAgentBindings
+            numbers={numbers}
+            agents={agents}
+            canEdit={canManage}
+            onChanged={() => fetchConfig(accountId!)}
+          />
+        )}
+
         {/* Attachment retention. Only meaningful once a number is
             connected, since it governs what the webhook does with
             inbound media. */}
@@ -917,5 +974,128 @@ export function WhatsAppConfig() {
       </div>
     </div>
     </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Number → agent bindings                                             */
+/* ------------------------------------------------------------------ */
+
+interface NumberRowLite {
+  id: string;
+  phone_number_id: string;
+  waba_id?: string | null;
+  agent_id: string | null;
+}
+
+interface AgentLite {
+  id: string;
+  name: string;
+  channel?: string;
+}
+
+function NumberAgentBindings({
+  numbers,
+  agents,
+  canEdit,
+  onChanged,
+}: {
+  numbers: NumberRowLite[];
+  agents: AgentLite[];
+  canEdit: boolean;
+  onChanged: () => void;
+}) {
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const bind = async (configId: string, agentId: string | null) => {
+    setSavingId(configId);
+    setError(null);
+    try {
+      const res = await fetch('/api/whatsapp/config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: configId, agent_id: agentId }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d?.error || 'Save failed');
+      }
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-foreground">Agents per number</CardTitle>
+        <CardDescription className="text-muted-foreground">
+          Choose which WhatsApp agent answers each number — flows first, then
+          its own AI. Unassigned numbers use the account-level auto-reply.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {numbers.map((n) => (
+          <div
+            key={n.id}
+            className="flex flex-col gap-2 rounded-xl border p-3 sm:flex-row sm:items-center"
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <MessageSquare className="h-4 w-4 shrink-0 text-[#128C7E]" />
+              <span className="truncate font-mono text-sm">
+                {n.phone_number_id}
+              </span>
+            </div>
+            {canEdit ? (
+              <Select
+                value={n.agent_id ?? '__none__'}
+                onValueChange={(v) =>
+                  bind(n.id, v === '__none__' ? null : v)
+                }
+                disabled={savingId === n.id}
+              >
+                <SelectTrigger className="w-full sm:w-[260px]">
+                  <SelectValue placeholder="Assign an agent…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">
+                    No agent (account auto-reply)
+                  </SelectItem>
+                  {agents.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {n.agent_id
+                  ? agents.find((a) => a.id === n.agent_id)?.name ??
+                    'Assigned agent'
+                  : 'No agent'}
+              </span>
+            )}
+            {savingId === n.id && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+            )}
+          </div>
+        ))}
+        {agents.length === 0 && (
+          <p className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">
+            No WhatsApp agents yet — create one under{' '}
+            <a href="/agents" className="text-primary hover:underline">
+              AI Agents
+            </a>{' '}
+            and pick the WhatsApp channel.
+          </p>
+        )}
+        {error && <p className="text-xs text-red-500">{error}</p>}
+      </CardContent>
+    </Card>
   );
 }
